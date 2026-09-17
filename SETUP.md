@@ -288,10 +288,11 @@ CRON_SECRET=the-generated-value
 3. Deploy. `vercel.json` already registers the alerts cron:
 
    ```json
-   { "crons": [{ "path": "/api/cron/refresh-watches", "schedule": "0 */6 * * *" }] }
+   { "crons": [{ "path": "/api/cron/refresh-watches", "schedule": "0 0 * * *" }] }
    ```
 
    Vercel sends `Authorization: Bearer $CRON_SECRET` automatically once `CRON_SECRET` is set.
+   Hobby plans only allow daily crons; on Pro you can switch to `0 */6 * * *` (every 6 hours).
 
 4. Allow Vercel's outbound IPs in **Remote MySQL** if your host restricts by IP.
 
