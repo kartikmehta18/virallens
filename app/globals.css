@@ -1,26 +1,297 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Design system — premium pure-black, single electric-blue accent.
+ * Light theme is a neutral counterpart; dark is the default.
+ */
 :root {
   --background: #ffffff;
-  --foreground: #171717;
+  --surface: #ffffff;
+  --surface-2: #f5f5f5;
+  --foreground: #0a0a0a;
+  --muted: #737373;
+  --border: #e5e5e5;
+  --accent: #2f80ff;
+  --accent-2: #1466ff;
+  --accent-soft: #4d9bff;
+  --accent-deep: #0a235c;
+  /* chart series color, validated on both surfaces (dataviz validator) */
+  --chart-series: #2f80ff;
+  --chart-grid: #ededed;
+  --cut: 10px;
+}
+
+.dark {
+  --background: #050505;
+  --surface: #0a0a0a;
+  --surface-2: #151515;
+  --foreground: #fafafa;
+  --muted: #a3a3a3;
+  --border: #262626;
+  --chart-grid: #1c1c1c;
 }
 
 @theme inline {
   --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
   --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-deep: var(--accent-deep);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  color-scheme: light;
+}
+html.dark {
+  color-scheme: dark;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-feature-settings: "ss01", "cv11";
+}
+
+::selection {
+  background: color-mix(in oklab, var(--accent) 45%, transparent);
+  color: var(--foreground);
+}
+
+/*
+ * Everything below lives in the `components` layer so plain Tailwind utilities
+ * (px-0, absolute, rounded-*, …) still win when a component class is overridden.
+ */
+@layer components {
+  /* Solid accent fill (logo marks, primary send buttons, active checks). */
+  .bg-viral {
+    background-color: var(--accent);
+  }
+  /* Emphasis inside large regular-weight headings: "Discover what's **going viral**". */
+  .text-viral {
+    color: var(--foreground);
+    font-weight: 600;
+  }
+
+  /* Display headings: regular weight, tight tracking, bold emphasis words. */
+  .display {
+    font-weight: 400;
+    letter-spacing: -0.02em;
+    line-height: 1.08;
+  }
+  .display b,
+  .display strong {
+    font-weight: 600;
+  }
+
+  /* ── Chamfered shapes ─────────────────────────────────────────────────────── */
+  /* Buttons: bottom-right corner cut. */
+  .chamfer-br {
+    clip-path: polygon(0 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%);
+  }
+  /* Cards: top-right corner cut. Pair .chamfer-frame (border colour) with an inner .chamfer-tr (fill). */
+  .chamfer-tr {
+    clip-path: polygon(0 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% 100%, 0 100%);
+  }
+  .chamfer-frame {
+    clip-path: polygon(0 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% 100%, 0 100%);
+    background: var(--border);
+    padding: 1px;
+  }
+  .chamfer-frame > .chamfer-tr {
+    --cut: calc(var(--cut-outer, 10px) - 0.5px);
+  }
+
+  /* Primary (light) and secondary (dark outline) buttons with the chamfered corner. */
+  .btn-primary,
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    height: 2.5rem;
+    padding: 0 1.25rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition:
+      background-color 0.2s,
+      color 0.2s,
+      opacity 0.2s,
+      transform 0.2s;
+    clip-path: polygon(0 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%);
+  }
+  .btn-primary {
+    background: var(--foreground);
+    color: var(--background);
+  }
+  .btn-primary:hover {
+    opacity: 0.88;
+  }
+  .btn-secondary {
+    background: var(--surface);
+    color: var(--foreground);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .btn-secondary:hover {
+    background: var(--surface-2);
+  }
+  .btn-primary:active,
+  .btn-secondary:active {
+    transform: translateY(1px);
+  }
+  .btn-primary:disabled,
+  .btn-secondary:disabled {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+
+  /* Blue duotone treatment for imagery (landing tiles, challenge image):
+   greyscale photo screened over deep navy, then multiplied with the accent blue. */
+  .duotone {
+    isolation: isolate;
+    overflow: hidden;
+    background: var(--accent-deep);
+  }
+  .duotone img {
+    filter: grayscale(1) contrast(1.25) brightness(1.05);
+    mix-blend-mode: screen;
+  }
+  .duotone::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    background: var(--accent);
+    mix-blend-mode: multiply;
+    pointer-events: none;
+  }
+
+  /* Hairline dashed divider. */
+  .dash-line {
+    background-image: linear-gradient(90deg, var(--border) 50%, transparent 50%);
+    background-size: 6px 1px;
+    background-repeat: repeat-x;
+    height: 1px;
+  }
+
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* ── Bento grid: dense packing with variable row/col spans per card ──────── */
+  .bento {
+    display: grid;
+    gap: 0.625rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: 150px;
+    grid-auto-flow: dense;
+  }
+  @media (min-width: 640px) {
+    .bento {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-auto-rows: 170px;
+    }
+  }
+  @media (min-width: 1024px) {
+    .bento {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+  }
+  @media (min-width: 1400px) {
+    .bento {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-auto-rows: 180px;
+    }
+  }
+
+  /* Compact density: extra columns and shorter rows at every breakpoint. */
+  .bento-compact {
+    gap: 0.5rem;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-auto-rows: 110px;
+  }
+  @media (min-width: 640px) {
+    .bento-compact {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-auto-rows: 130px;
+    }
+  }
+  @media (min-width: 1024px) {
+    .bento-compact {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+  }
+  @media (min-width: 1400px) {
+    .bento-compact {
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      grid-auto-rows: 140px;
+    }
+  }
+  /* Small phones: three compact columns would make cards unreadable. */
+  @media (max-width: 399px) {
+    .bento-compact {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  /* Large desktop monitors (1920px+): more columns instead of stretched cards. */
+  @media (min-width: 1880px) {
+    .bento {
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      grid-auto-rows: 200px;
+    }
+    .bento-compact {
+      grid-template-columns: repeat(8, minmax(0, 1fr));
+      grid-auto-rows: 150px;
+    }
+  }
+
+  @keyframes shimmer {
+    100% {
+      transform: translateX(100%);
+    }
+  }
+  .skeleton {
+    position: relative;
+    overflow: hidden;
+    background: var(--surface-2);
+  }
+  .skeleton::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--foreground) 5%, transparent), transparent);
+    animation: shimmer 1.6s infinite;
+  }
+
+  @keyframes pulse-dot {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
+  .pulse-dot {
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after,
+  .pulse-dot {
+    animation: none;
+  }
 }

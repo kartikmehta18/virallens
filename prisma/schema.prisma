@@ -1,0 +1,141 @@
+// ViralLens database schema (MySQL / MariaDB).
+// The database is optional: when no DB_* / DATABASE_URL env vars are set the app
+// falls back to an in-memory store (see lib/repo).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model Post {
+  id              String   @id @default(cuid())
+  platform        String   @db.VarChar(20)
+  authorName      String   @db.VarChar(255)
+  authorHandle    String   @db.VarChar(255)
+  authorAvatarUrl String?  @db.Text
+  caption         String   @db.Text
+  mediaType       String   @db.VarChar(20)
+  mediaUrls       Json
+  thumbnailUrl    String?  @db.Text
+  postUrl         String   @unique @db.VarChar(700)
+  likeCount       Int      @default(0)
+  commentCount    Int      @default(0)
+  shareCount      Int      @default(0)
+  viewCount       Int?
+  engagementScore Float    @default(0)
+  trendingScore   Float    @default(0)
+  topic           String   @db.VarChar(255)
+  tags            Json
+  aiBreakdown     Json?
+  publishedAt     DateTime
+  fetchedAt       DateTime @default(now())
+
+  savedIn SavedPost[]
+
+  @@index([topic])
+  @@index([platform])
+  @@index([trendingScore])
+  @@index([engagementScore])
+  @@index([publishedAt])
+  @@index([platform, authorHandle])
+}
+
+model User {
+  id           String   @id @default(cuid())
+  username     String?  @unique @db.VarChar(64)
+  email        String   @unique @db.VarChar(191)
+  name         String?  @db.VarChar(191)
+  passwordHash String?  @db.VarChar(255)
+  isTest       Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  boards   Board[]
+  watches  WatchedTopic[]
+  creators FavoriteCreator[]
+}
+
+model Board {
+  id        String   @id @default(cuid())
+  name      String   @db.VarChar(191)
+  userId    String
+  createdAt DateTime @default(now())
+
+  user  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  posts SavedPost[]
+
+  @@index([userId])
+}
+
+model SavedPost {
+  id        String   @id @default(cuid())
+  boardId   String
+  postId    String
+  createdAt DateTime @default(now())
+
+  board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  post  Post  @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([boardId, postId])
+  @@index([postId])
+}
+
+model ScrapeJob {
+  id         String    @id @default(cuid())
+  topic      String    @db.VarChar(255)
+  platforms  Json
+  status     String    @db.VarChar(20)
+  error      String?   @db.Text
+  postsFound Int       @default(0)
+  runs       Json?
+  userId     String?
+  createdAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  @@index([createdAt])
+}
+
+model WatchedTopic {
+  id             String    @id @default(cuid())
+  userId         String
+  topic          String    @db.VarChar(255)
+  platforms      Json
+  thresholdScore Float
+  lastCheckedAt  DateTime?
+  createdAt      DateTime  @default(now())
+
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  alerts WatchAlert[]
+
+  @@unique([userId, topic])
+}
+
+model FavoriteCreator {
+  id            String    @id @default(cuid())
+  userId        String
+  platform      String    @db.VarChar(20)
+  handle        String    @db.VarChar(191)
+  name          String    @db.VarChar(255)
+  avatarUrl     String?   @db.Text
+  lastFetchedAt DateTime?
+  createdAt     DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, platform, handle])
+  @@index([userId])
+}
+
+model WatchAlert {
+  id        String   @id @default(cuid())
+  watchId   String
+  postId    String
+  createdAt DateTime @default(now())
+
+  watch WatchedTopic @relation(fields: [watchId], references: [id], onDelete: Cascade)
+
+  @@unique([watchId, postId])
+}
