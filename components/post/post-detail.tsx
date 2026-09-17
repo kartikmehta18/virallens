@@ -8,7 +8,7 @@ import { SaveButton } from "@/components/boards/save-button";
 import { SaveCreatorButton } from "@/components/creators/save-creator-button";
 import { mediaLayoutId } from "@/components/grid/post-card";
 import { PlatformLink } from "@/components/icons/platform-link";
-import { formatCount, timeAgo } from "@/lib/client/format";
+import { formatCount, ago, timeAgo } from "@/lib/client/format";
 import { creatorPath } from "@/lib/creators";
 import { usePost } from "@/lib/client/hooks";
 import { getOpenScope } from "@/lib/client/transition";
@@ -93,7 +93,7 @@ function SidePanel({ post, mode, onClose }: { post: Post; mode: Props["mode"]; o
           <div className="min-w-0 flex-1">
             <p className="truncate leading-tight font-semibold group-hover/author:underline">{post.authorName}</p>
             <p className="text-muted flex items-center gap-1.5 truncate text-xs">
-              @{post.authorHandle} · {timeAgo(post.publishedAt)} ago
+              @{post.authorHandle} · {ago(post.publishedAt)}
             </p>
           </div>
         </Link>

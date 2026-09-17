@@ -10,7 +10,7 @@ import { Avatar } from "@/components/post/avatar";
 import { inputClass } from "@/components/ui/form";
 import { Crosshairs } from "@/components/ui/primitives";
 import { PLATFORM_LABELS, filtersToParams, DEFAULT_FILTERS } from "@/lib/client/filters";
-import { formatCount, timeAgo } from "@/lib/client/format";
+import { formatCount, ago } from "@/lib/client/format";
 import { useCreatorMutations, useFavoriteCreators } from "@/lib/client/hooks";
 import { creatorKey, creatorPath, parseCreatorInput } from "@/lib/creators";
 import { PLATFORMS, type FavoriteCreatorWithStats, type Platform } from "@/lib/types";
@@ -186,7 +186,7 @@ function CreatorCard({ creator }: { creator: FavoriteCreatorWithStats }) {
       </dl>
 
       <p className="text-muted mt-3 text-[12px]" aria-live="polite">
-        {message ?? (creator.lastFetchedAt ? `Fetched ${timeAgo(creator.lastFetchedAt)} ago` : "Posts not fetched yet")}
+        {message ?? (creator.lastFetchedAt ? `Fetched ${ago(creator.lastFetchedAt)}` : "Posts not fetched yet")}
       </p>
 
       <div className="mt-auto flex items-center gap-2 pt-4">

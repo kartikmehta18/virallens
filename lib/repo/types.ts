@@ -10,6 +10,7 @@ import type {
   PostInput,
   PostPage,
   PostQuery,
+  Role,
   ScrapeJob,
   User,
   WatchedTopic,
@@ -17,6 +18,61 @@ import type {
 
 export interface StoredUser extends User {
   passwordHash: string | null;
+  googleId: string | null;
+  disabled: boolean;
+  accessKeyHash: string | null;
+  accessKeyCipher: string | null;
+  accessKeyCreatedAt: string | null;
+  sessionVersion: number;
+  lastLoginAt: string | null;
+  invitedById: string | null;
+}
+
+export interface NewUser {
+  id?: string;
+  username: string | null;
+  email: string | null;
+  name: string | null;
+  passwordHash: string | null;
+  isTest: boolean;
+  role?: Role;
+  invitedById?: string | null;
+  googleId?: string | null;
+  avatarUrl?: string | null;
+}
+
+export type UserPatch = Partial<{
+  username: string | null;
+  email: string | null;
+  name: string | null;
+  passwordHash: string | null;
+  googleId: string | null;
+  avatarUrl: string | null;
+  invitedById: string | null;
+  role: Role;
+  disabled: boolean;
+  isTest: boolean;
+  accessKeyHash: string | null;
+  accessKeyCipher: string | null;
+  accessKeyCreatedAt: Date | null;
+  lastLoginAt: Date;
+}> & {
+  /** Invalidates every existing session of the user. */
+  bumpSessionVersion?: boolean;
+};
+
+export interface StoredInvite {
+  id: string;
+  tokenHash: string;
+  tokenCipher: string;
+  email: string | null;
+  name: string | null;
+  role: Role;
+  createdById: string;
+  expiresAt: string;
+  usedAt: string | null;
+  usedById: string | null;
+  createdAt: string;
 }
 
 export interface CreatorSummary extends CreatorStats {
@@ -58,14 +114,23 @@ export interface Repository {
     byId(id: string): Promise<StoredUser | null>;
     byEmail(email: string): Promise<StoredUser | null>;
     byUsername(username: string): Promise<StoredUser | null>;
-    create(data: {
-      id?: string;
-      username: string | null;
-      email: string;
-      name: string | null;
-      passwordHash: string | null;
-      isTest: boolean;
-    }): Promise<StoredUser>;
+    byAccessKeyHash(hash: string): Promise<StoredUser | null>;
+    byGoogleId(googleId: string): Promise<StoredUser | null>;
+    create(data: NewUser): Promise<StoredUser>;
+    /** Server accounts only (test-mode local mirrors are excluded), newest first. */
+    list(): Promise<StoredUser[]>;
+    update(id: string, patch: UserPatch): Promise<StoredUser | null>;
+    remove(id: string): Promise<boolean>;
+    countAdmins(): Promise<number>;
+  };
+
+  invites: {
+    create(data: Omit<StoredInvite, "id" | "usedAt" | "usedById" | "createdAt">): Promise<StoredInvite>;
+    list(): Promise<StoredInvite[]>;
+    byTokenHash(hash: string): Promise<StoredInvite | null>;
+    /** Atomically claims an unused invite; false if it was already used. */
+    markUsed(id: string, userId: string): Promise<boolean>;
+    remove(id: string): Promise<boolean>;
   };
 
   boards: {
@@ -98,7 +163,7 @@ export interface Repository {
 
   watches: {
     list(userId: string): Promise<WatchedTopic[]>;
-    all(): Promise<(WatchedTopic & { userEmail: string })[]>;
+    all(): Promise<(WatchedTopic & { userEmail: string | null })[]>;
     upsert(userId: string, data: Pick<WatchedTopic, "topic" | "platforms" | "thresholdScore">): Promise<WatchedTopic>;
     remove(userId: string, id: string): Promise<boolean>;
     markChecked(id: string, at: Date): Promise<void>;

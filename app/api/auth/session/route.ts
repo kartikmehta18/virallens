@@ -8,9 +8,11 @@ import type { SessionInfo } from "@/lib/types";
 export const GET = handler(async (request: NextRequest) => {
   const session: SessionInfo = {
     testMode: env.testMode,
+    accessMode: env.inviteOnly ? "invite" : "open",
     dbEnabled: env.dbEnabled,
     apifyEnabled: Boolean(env.apifyToken),
     aiProvider: activeAiProvider(),
+    googleEnabled: env.googleEnabled,
     user: await getCurrentUser(request),
   };
   return json(session);

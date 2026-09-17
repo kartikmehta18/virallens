@@ -1,5 +1,6 @@
 import "server-only";
 import { resolveDbParts } from "./db/url";
+import { authSecret } from "./auth/token";
 
 const truthy = (value: string | undefined) => ["on", "true", "1", "yes"].includes((value ?? "").trim().toLowerCase());
 
@@ -18,12 +19,18 @@ export const env = {
     return process.env.REDIS_URL?.trim() || null;
   },
   get authSecret() {
-    const secret = process.env.AUTH_SECRET?.trim();
-    if (secret) return secret;
-    if (process.env.NODE_ENV === "production" && !this.testMode) {
-      throw new Error("AUTH_SECRET must be set when TEST_MODE is off in production");
-    }
-    return "virallens-dev-secret-do-not-use-in-production";
+    return authSecret();
+  },
+  /** ACCESS_MODE=invite (default) or open. */
+  get accessMode(): "invite" | "open" {
+    return process.env.ACCESS_MODE?.trim().toLowerCase() === "open" ? "open" : "invite";
+  },
+  /**
+   * Invite-only access: server accounts (TEST_MODE off) + a database + ACCESS_MODE=invite. Only admins can add
+   * users (access keys) or send invite links; every app page and API requires a signed-in user.
+   */
+  get inviteOnly() {
+    return !this.testMode && this.dbEnabled && this.accessMode === "invite";
   },
   get anthropicKey() {
     return process.env.ANTHROPIC_API_KEY?.trim() || null;
@@ -34,6 +41,16 @@ export const env = {
   /** Google Gemini (free tier via Google AI Studio). GEMNI_API_KEY is accepted as a typo-tolerant alias. */
   get geminiKey() {
     return (process.env.GEMINI_API_KEY || process.env.GEMNI_API_KEY || process.env.GOOGLE_API_KEY)?.trim() || null;
+  },
+  get googleClientId() {
+    return process.env.GOOGLE_CLIENT_ID?.trim() || null;
+  },
+  get googleClientSecret() {
+    return process.env.GOOGLE_CLIENT_SECRET?.trim() || null;
+  },
+  /** Google sign-in needs both OAuth credentials and server accounts (TEST_MODE off + database). */
+  get googleEnabled() {
+    return Boolean(this.googleClientId && this.googleClientSecret && !this.testMode && this.dbEnabled);
   },
   get resendKey() {
     return process.env.RESEND_API_KEY?.trim() || null;

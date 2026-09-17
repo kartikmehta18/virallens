@@ -4,6 +4,8 @@ import { creatorKey } from "../creators";
 import {
   Prisma,
   type FavoriteCreator as CreatorRow,
+  type Invite as InviteRow,
+  type User as UserRow,
   type Post as PostRow,
   type ScrapeJob as ScrapeJobRow,
   type WatchedTopic as WatchRow,
@@ -17,13 +19,14 @@ import type {
   Platform,
   Post,
   PostQuery,
+  Role,
   ScrapeJob,
   ScrapeRunInfo,
   SortKey,
   WatchedTopic,
 } from "../types";
 import { SORT_FIELDS, clampInt, truncate } from "./shared";
-import type { CreatorSummary, Repository, StoredUser } from "./types";
+import type { CreatorSummary, Repository, StoredInvite, StoredUser, UserPatch } from "./types";
 
 const iso = (date: Date | null) => (date ? date.toISOString() : null);
 const asArray = <T>(value: Prisma.JsonValue | null | undefined): T[] => (Array.isArray(value) ? (value as T[]) : []);
@@ -130,16 +133,48 @@ function toWatch(row: WatchRow): WatchedTopic {
   };
 }
 
-function toUser(row: {
-  id: string;
-  username: string | null;
-  email: string;
-  name: string | null;
-  passwordHash: string | null;
-  isTest: boolean;
-  createdAt: Date;
-}): StoredUser {
-  return { ...row, createdAt: row.createdAt.toISOString() };
+const asRole = (value: string): Role => (value === "admin" ? "admin" : "user");
+
+function toUser(row: UserRow): StoredUser {
+  return {
+    id: row.id,
+    username: row.username,
+    email: row.email,
+    name: row.name,
+    avatarUrl: row.avatarUrl,
+    role: asRole(row.role),
+    isTest: row.isTest,
+    passwordHash: row.passwordHash,
+    googleId: row.googleId,
+    disabled: row.disabled,
+    accessKeyHash: row.accessKeyHash,
+    accessKeyCipher: row.accessKeyCipher,
+    accessKeyCreatedAt: iso(row.accessKeyCreatedAt),
+    sessionVersion: row.sessionVersion,
+    lastLoginAt: iso(row.lastLoginAt),
+    invitedById: row.invitedById,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+function toInvite(row: InviteRow): StoredInvite {
+  return {
+    ...row,
+    role: asRole(row.role),
+    expiresAt: row.expiresAt.toISOString(),
+    usedAt: iso(row.usedAt),
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+function userData(patch: UserPatch): Prisma.UserUpdateInput {
+  const { bumpSessionVersion, ...data } = patch;
+  return {
+    ...data,
+    ...(data.username !== undefined && { username: data.username?.toLowerCase() ?? null }),
+    ...(data.email !== undefined && { email: data.email?.toLowerCase() || null }),
+    ...(bumpSessionVersion && { sessionVersion: { increment: 1 } }),
+  };
 }
 
 /** Runs async tasks with bounded concurrency (keeps us under the DB connection limit). */
@@ -437,10 +472,59 @@ export function createPrismaRepository(): Repository {
         const row = await db.user.findUnique({ where: { username: username.toLowerCase() } });
         return row ? toUser(row) : null;
       },
+      async byAccessKeyHash(hash) {
+        const row = await db.user.findUnique({ where: { accessKeyHash: hash } });
+        return row ? toUser(row) : null;
+      },
+      async byGoogleId(googleId) {
+        const row = await db.user.findUnique({ where: { googleId } });
+        return row ? toUser(row) : null;
+      },
       async create(data) {
         return toUser(
-          await db.user.create({ data: { ...data, username: data.username?.toLowerCase() ?? null, email: data.email.toLowerCase() } }),
+          await db.user.create({
+            data: { ...data, username: data.username?.toLowerCase() ?? null, email: data.email?.toLowerCase() || null },
+          }),
         );
+      },
+      async list() {
+        return (await db.user.findMany({ where: { isTest: false }, orderBy: { createdAt: "desc" } })).map(toUser);
+      },
+      async update(id, patch) {
+        try {
+          return toUser(await db.user.update({ where: { id }, data: userData(patch) }));
+        } catch (error) {
+          if ((error as { code?: string }).code === "P2025") return null;
+          throw error;
+        }
+      },
+      async remove(id) {
+        const { count } = await db.user.deleteMany({ where: { id } });
+        return count > 0;
+      },
+      async countAdmins() {
+        return db.user.count({ where: { role: "admin", disabled: false } });
+      },
+    },
+
+    invites: {
+      async create(data) {
+        return toInvite(await db.invite.create({ data: { ...data, expiresAt: new Date(data.expiresAt) } }));
+      },
+      async list() {
+        return (await db.invite.findMany({ orderBy: { createdAt: "desc" }, take: 200 })).map(toInvite);
+      },
+      async byTokenHash(hash) {
+        const row = await db.invite.findUnique({ where: { tokenHash: hash } });
+        return row ? toInvite(row) : null;
+      },
+      async markUsed(id, userId) {
+        const { count } = await db.invite.updateMany({ where: { id, usedAt: null }, data: { usedAt: new Date(), usedById: userId } });
+        return count > 0;
+      },
+      async remove(id) {
+        const { count } = await db.invite.deleteMany({ where: { id } });
+        return count > 0;
       },
     },
 

@@ -9,6 +9,7 @@ import {
   LogOut,
   Menu,
   Settings,
+  ShieldCheck,
   Sparkles,
   User as UserIcon,
   Users,
@@ -134,15 +135,26 @@ export function SiteHeader() {
             </div>
           ) : (
             <>
-              <Link href={`/login?next=${encodeURIComponent(pathname)}`} className="btn-secondary hidden h-9 sm:inline-flex">
-                Sign In
-              </Link>
-              <Link
-                href={`/login?mode=register&next=${encodeURIComponent(pathname === "/" ? "/explore" : pathname)}`}
-                className="btn-primary h-9 px-3.5 text-[13px] sm:px-5"
-              >
-                Get Started
-              </Link>
+              {session?.accessMode === "invite" && !session.testMode ? (
+                <Link
+                  href={`/login?next=${encodeURIComponent(pathname === "/" ? "/explore" : pathname)}`}
+                  className="btn-primary h-9 px-3.5 text-[13px] sm:px-5"
+                >
+                  Sign In
+                </Link>
+              ) : (
+                <>
+                  <Link href={`/login?next=${encodeURIComponent(pathname)}`} className="btn-secondary hidden h-9 sm:inline-flex">
+                    Sign In
+                  </Link>
+                  <Link
+                    href={`/login?mode=register&next=${encodeURIComponent(pathname === "/" ? "/explore" : pathname)}`}
+                    className="btn-primary h-9 px-3.5 text-[13px] sm:px-5"
+                  >
+                    Get Started
+                  </Link>
+                </>
+              )}
             </>
           )}
           <MobileMenu />
@@ -234,7 +246,7 @@ function AccountMenu() {
   const [open, setOpen] = useState(false);
   const ref = useDismiss(open, () => setOpen(false));
   if (!user) return null;
-  const handle = user.username ?? user.name ?? user.email.split("@")[0];
+  const handle = user.username ?? user.name ?? user.email?.split("@")[0] ?? "user";
 
   return (
     <div ref={ref} className="relative">
@@ -268,7 +280,8 @@ function AccountMenu() {
               { href: "/boards", icon: Bookmark, label: "Boards" },
               { href: "/watches", icon: Bell, label: "Alerts" },
               { href: "/settings", icon: Settings, label: "Settings" },
-              { href: "/login", icon: UserIcon, label: "Account" },
+              { href: "/login", icon: UserIcon, label: "Account & access key" },
+              ...(user.role === "admin" && !session?.testMode ? [{ href: "/admin", icon: ShieldCheck, label: "Admin panel" }] : []),
             ].map(({ href, icon: Icon, label }) => (
               <Link
                 key={href}
@@ -330,13 +343,16 @@ function MobileMenu() {
     };
   }, [open]);
 
-  const handle = user ? (user.username ?? user.name ?? user.email.split("@")[0]) : "";
+  const handle = user ? (user.username ?? user.name ?? user.email?.split("@")[0] ?? "user") : "";
   const links = [
     { href: "/explore", icon: Compass, label: "Explore", body: "The ranked viral feed" },
     { href: "/creators", icon: Users, label: "Creators", body: "Favorite creators and their posts" },
     { href: "/boards", icon: Bookmark, label: "Boards", body: "Your saved swipe files" },
     { href: "/watches", icon: Bell, label: "Alerts", body: "Topics you're watching" },
     { href: "/settings", icon: Settings, label: "Settings", body: "Search bar, theme and defaults" },
+    ...(user?.role === "admin" && !session?.testMode
+      ? [{ href: "/admin", icon: ShieldCheck, label: "Admin panel", body: "Users, access keys and invites" }]
+      : []),
   ];
 
   return (
@@ -433,7 +449,9 @@ function MobileMenu() {
                         </button>
                       </div>
                     ) : (
-                      <div className="grid grid-cols-2 gap-3">
+                      <div
+                        className={`grid gap-3 ${session?.accessMode === "invite" && !session.testMode ? "grid-cols-1" : "grid-cols-2"}`}
+                      >
                         <Link
                           href={`/login?next=${encodeURIComponent(pathname)}`}
                           onClick={() => setOpen(false)}
@@ -441,13 +459,15 @@ function MobileMenu() {
                         >
                           Sign In
                         </Link>
-                        <Link
-                          href={`/login?mode=register&next=${encodeURIComponent(pathname === "/" ? "/explore" : pathname)}`}
-                          onClick={() => setOpen(false)}
-                          className="btn-primary h-11"
-                        >
-                          Get Started
-                        </Link>
+                        {!(session?.accessMode === "invite" && !session.testMode) && (
+                          <Link
+                            href={`/login?mode=register&next=${encodeURIComponent(pathname === "/" ? "/explore" : pathname)}`}
+                            onClick={() => setOpen(false)}
+                            className="btn-primary h-11"
+                          >
+                            Get Started
+                          </Link>
+                        )}
                       </div>
                     )}
                   </div>

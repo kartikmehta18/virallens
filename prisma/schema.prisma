@@ -45,17 +45,34 @@ model Post {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  username     String?  @unique @db.VarChar(64)
-  email        String   @unique @db.VarChar(191)
-  name         String?  @db.VarChar(191)
-  passwordHash String?  @db.VarChar(255)
-  isTest       Boolean  @default(false)
-  createdAt    DateTime @default(now())
+  id                 String    @id @default(cuid())
+  username           String?   @unique @db.VarChar(64)
+  /// Optional: admin-created users can sign in with an access key alone.
+  email              String?   @unique @db.VarChar(191)
+  name               String?   @db.VarChar(191)
+  passwordHash       String?   @db.VarChar(255)
+  /// Google account id (OpenID "sub"), set on first Google sign-in.
+  googleId           String?   @unique @db.VarChar(64)
+  avatarUrl          String?   @db.Text
+  isTest             Boolean   @default(false)
+  /// "user" | "admin"
+  role               String    @default("user") @db.VarChar(20)
+  disabled           Boolean   @default(false)
+  /// SHA-256 of the access key (lookup on sign-in).
+  accessKeyHash      String?   @unique @db.VarChar(64)
+  /// AES-256-GCM encrypted access key, so the user and admins can view it again.
+  accessKeyCipher    String?   @db.Text
+  accessKeyCreatedAt DateTime?
+  /// Bumped to invalidate every existing session (key regenerated, account disabled).
+  sessionVersion     Int       @default(0)
+  lastLoginAt        DateTime?
+  invitedById        String?   @db.VarChar(191)
+  createdAt          DateTime  @default(now())
 
   boards   Board[]
   watches  WatchedTopic[]
   creators FavoriteCreator[]
+  invites  Invite[]
 }
 
 model Board {
@@ -127,6 +144,25 @@ model FavoriteCreator {
 
   @@unique([userId, platform, handle])
   @@index([userId])
+}
+
+/// Single-use invite link created by an admin (invite-only access mode).
+model Invite {
+  id          String    @id @default(cuid())
+  tokenHash   String    @unique @db.VarChar(64)
+  tokenCipher String    @db.Text
+  email       String?   @db.VarChar(191)
+  name        String?   @db.VarChar(191)
+  role        String    @default("user") @db.VarChar(20)
+  createdById String
+  expiresAt   DateTime
+  usedAt      DateTime?
+  usedById    String?   @db.VarChar(191)
+  createdAt   DateTime  @default(now())
+
+  createdBy User @relation(fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([createdById])
 }
 
 model WatchAlert {
