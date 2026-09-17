@@ -5,9 +5,9 @@ import { ApiError } from "../http";
 import { getRepo } from "../repo";
 import type { StoredUser } from "../repo/types";
 import type { User } from "../types";
-import { createToken, verifyToken } from "./crypto";
+import { SESSION_COOKIE, createToken, verifyToken } from "./token";
 
-export const SESSION_COOKIE = "vl_session";
+export { SESSION_COOKIE };
 export const SESSION_MAX_AGE = 60 * 60 * 24 * 30;
 
 /** Header names the client sends in TEST_MODE (values come from localStorage). */
@@ -23,6 +23,8 @@ export const publicUser = (user: StoredUser): User => ({
   username: user.username,
   email: user.email,
   name: user.name,
+  avatarUrl: user.avatarUrl,
+  role: user.role,
   isTest: user.isTest,
   createdAt: user.createdAt,
 });
@@ -30,7 +32,8 @@ export const publicUser = (user: StoredUser): User => ({
 /**
  * Resolves the current user.
  * - TEST_MODE on: the browser-generated localStorage id is trusted; a user row is created on first sight.
- * - TEST_MODE off: a signed session cookie issued by /api/auth/login is required.
+ * - TEST_MODE off: a signed session cookie is required, the account must be enabled, and the cookie's
+ *   session version must match (regenerating the access key or disabling the account revokes sessions).
  */
 export async function getCurrentUser(request: NextRequest): Promise<User | null> {
   const repo = await getRepo();
@@ -57,11 +60,11 @@ export async function getCurrentUser(request: NextRequest): Promise<User | null>
     return publicUser(created);
   }
 
-  const token = request.cookies.get(SESSION_COOKIE)?.value;
-  const session = token ? verifyToken(token) : null;
+  const session = verifyToken(request.cookies.get(SESSION_COOKIE)?.value);
   if (!session) return null;
   const user = await repo.users.byId(session.uid);
-  return user ? publicUser(user) : null;
+  if (!user || user.disabled || user.sessionVersion !== session.v) return null;
+  return publicUser(user);
 }
 
 export async function requireUser(request: NextRequest): Promise<User> {
@@ -70,8 +73,16 @@ export async function requireUser(request: NextRequest): Promise<User> {
   return user;
 }
 
-export function setSessionCookie(response: NextResponse, userId: string) {
-  response.cookies.set(SESSION_COOKIE, createToken({ uid: userId }, SESSION_MAX_AGE), {
+/** Admin-only endpoints. Roles live in the database, so they need server accounts (TEST_MODE off). */
+export async function requireAdmin(request: NextRequest): Promise<User> {
+  if (env.testMode) throw new ApiError(403, "The admin panel needs TEST_MODE=off (server accounts)");
+  const user = await requireUser(request);
+  if (user.role !== "admin") throw new ApiError(403, "Admins only");
+  return user;
+}
+
+export function setSessionCookie(response: NextResponse, user: Pick<StoredUser, "id" | "sessionVersion">) {
+  response.cookies.set(SESSION_COOKIE, createToken({ uid: user.id, v: user.sessionVersion }, SESSION_MAX_AGE), {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",

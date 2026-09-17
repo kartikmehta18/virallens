@@ -68,12 +68,48 @@ export interface PostPage {
   hasMore: boolean;
 }
 
+export const ROLES = ["user", "admin"] as const;
+export type Role = (typeof ROLES)[number];
+
 export interface User {
   id: string;
   username: string | null;
-  email: string;
+  /** Optional for admin-created (access key) accounts. */
+  email: string | null;
   name: string | null;
+  /** Profile picture from Google, when the account is linked. */
+  avatarUrl: string | null;
+  role: Role;
   isTest: boolean;
+  createdAt: string;
+}
+
+/** A user as seen on the admin page, including their (decrypted) access key. */
+export interface AdminUser extends User {
+  disabled: boolean;
+  /** Signed in with Google at least once (their Google account is linked). */
+  googleLinked: boolean;
+  /** null when no key was issued, or it can't be decrypted (AUTH_SECRET changed) — regenerate to fix. */
+  accessKey: string | null;
+  hasAccessKey: boolean;
+  accessKeyCreatedAt: string | null;
+  lastLoginAt: string | null;
+}
+
+export type InviteStatus = "pending" | "used" | "expired";
+
+export interface Invite {
+  id: string;
+  email: string | null;
+  name: string | null;
+  role: Role;
+  status: InviteStatus;
+  /** Full sign-up link; null if it can't be decrypted. */
+  link: string | null;
+  createdById: string;
+  expiresAt: string;
+  usedAt: string | null;
+  usedById: string | null;
   createdAt: string;
 }
 
@@ -165,9 +201,13 @@ export interface CreatorProfile extends CreatorRef {
 
 export interface SessionInfo {
   testMode: boolean;
+  /** "invite": sign-up needs an invite link, the app requires sign-in. "open": anyone can register. */
+  accessMode: "invite" | "open";
   dbEnabled: boolean;
   apifyEnabled: boolean;
   aiProvider: AiBreakdown["provider"];
+  /** GOOGLE_CLIENT_ID/SECRET configured (and server accounts in use). */
+  googleEnabled: boolean;
   user: User | null;
 }
 

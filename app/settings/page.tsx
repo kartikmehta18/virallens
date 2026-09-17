@@ -3,6 +3,7 @@
 import { Check, Database, FlaskConical, Monitor, Moon, RotateCcw, Sparkles, Sun, Webhook } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { MyAccessKey } from "@/components/account/my-access-key";
 import { PlatformIcon } from "@/components/icons/platform-icon";
 import { segmentClass } from "@/components/ui/form";
 import { Crosshairs } from "@/components/ui/primitives";
@@ -168,9 +169,13 @@ export default function SettingsPage() {
               {user ? (
                 <div className="text-muted mt-1 text-[13px]">
                   <p className="truncate">
-                    @{user.username ?? user.name} · {user.email}
+                    @{user.username ?? user.name}
+                    {user.email ? ` · ${user.email}` : ""} · {user.role === "admin" ? "Admin" : "User"}
                   </p>
                   <p className="mt-0.5 font-mono text-xs break-all">{user.id}</p>
+                  <div className="text-foreground mt-3">
+                    <MyAccessKey compact />
+                  </div>
                 </div>
               ) : (
                 <p className="text-muted mt-1 text-[13px]">

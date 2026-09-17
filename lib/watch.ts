@@ -47,10 +47,12 @@ export async function refreshWatchedTopics(): Promise<WatchRunReport> {
 
       const fresh = [];
       for (const post of hot) if (await repo.watches.recordAlert(watch.id, post.id)) fresh.push(post);
-      if (fresh.length) {
+      if (fresh.length && !watch.userEmail) {
+        console.info(`[virallens] ${fresh.length} alert(s) for "${watch.topic}" not emailed: the user has no email address`);
+      } else if (fresh.length && watch.userEmail) {
         await sendAlertEmail(watch.userEmail, watch.topic, fresh.sort((a, b) => b.trendingScore - a.trendingScore).slice(0, 10));
-        report.alerts += fresh.length;
       }
+      report.alerts += fresh.length;
       await repo.watches.markChecked(watch.id, new Date());
     } catch (error) {
       report.errors.push(`${watch.topic}: ${error instanceof Error ? error.message : String(error)}`);

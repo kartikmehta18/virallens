@@ -43,30 +43,32 @@ and test mode.
 
 All variables live in `.env` (copy from `.env.example`). Everything except `TEST_MODE` is optional.
 
-| Variable                                                           | Required             | Purpose                                                                                               |
-| ------------------------------------------------------------------ | -------------------- | ----------------------------------------------------------------------------------------------------- |
-| `TEST_MODE`                                                        | yes                  | `on` = passwordless-style local accounts stored in the browser; `off` = real accounts in the database |
-| `AUTH_SECRET`                                                      | when `TEST_MODE=off` | Signs session cookies                                                                                 |
-| `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME`      | no                   | MySQL connection. Omit to run on the in-memory store                                                  |
-| `DATABASE_URL`                                                     | no                   | Alternative to the `DB_*` pair: `mysql://user:pass@host:3306/db`                                      |
-| `REDIS_URL`                                                        | no                   | Caching + rate limiting. Falls back to in-process memory                                              |
-| `APIFY_API_TOKEN`                                                  | no                   | Enables real scraping. Without it, searches generate demo posts                                       |
-| `APIFY_ACTOR_X` / `APIFY_ACTOR_LINKEDIN` / `APIFY_ACTOR_INSTAGRAM` | no                   | Override the default actors                                                                           |
-| `APIFY_INPUT_X` / `APIFY_INPUT_LINKEDIN` / `APIFY_INPUT_INSTAGRAM` | no                   | Raw JSON actor input with `{{topic}}`, `{{hashtag}}`, `{{limit}}` placeholders                        |
-| `APIFY_ACTOR_*_PROFILE` / `APIFY_INPUT_*_PROFILE`                  | no                   | Actors + input used to fetch a saved creator's posts (`{{handle}}`, `{{profileUrl}}`, `{{limit}}`)    |
-| `APIFY_MAX_ITEMS`                                                  | no                   | Posts requested per platform per scrape (default `40`)                                                |
-| `SCRAPE_CACHE_TTL`                                                 | no                   | Seconds a topic counts as fresh (default `21600` = 6h)                                                |
-| `SCRAPE_RATE_LIMIT`                                                | no                   | Scrapes per user/IP per hour (default `20`)                                                           |
-| `ANTHROPIC_API_KEY`                                                | no                   | AI "why it went viral" breakdowns via Claude (preferred)                                              |
-| `OPENAI_API_KEY`                                                   | no                   | Same feature via OpenAI (tried after Claude)                                                          |
-| `GEMINI_API_KEY`                                                   | no                   | Same feature via Google Gemini — free tier (tried after OpenAI)                                       |
-| `OPENAI_MODEL`                                                     | no                   | Defaults to `gpt-4o-mini`                                                                             |
-| `RESEND_API_KEY`                                                   | no                   | Sends alert emails. Without it alerts are logged to the server console                                |
-| `ALERT_FROM_EMAIL`                                                 | no                   | From address for alerts, e.g. `ViralLens <alerts@yourdomain.com>`                                     |
-| `APP_URL`                                                          | no                   | Public URL used in alert email links                                                                  |
-| `CRON_SECRET`                                                      | in production        | Protects `/api/cron/*`. Required in production, sent as `Authorization: Bearer <secret>`              |
-| `DB_CONNECTION_LIMIT`                                              | no                   | MySQL pool size (default `5`)                                                                         |
-| `DB_IDLE_TIMEOUT`                                                  | no                   | Seconds before idle pool connections are recycled; keep below MySQL `wait_timeout` (default `10`)    |
+| Variable                                                           | Required             | Purpose                                                                                                       |
+| ------------------------------------------------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `TEST_MODE`                                                        | yes                  | `on` = passwordless-style local accounts stored in the browser; `off` = real accounts in the database         |
+| `ACCESS_MODE`                                                      | no                   | `invite` (default) = invite-only workspace with admins, access keys and invite links; `open` = public sign-up |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`                        | no                   | Enables "Continue with Google" sign-in (server accounts only)                                                 |
+| `AUTH_SECRET`                                                      | when `TEST_MODE=off` | Signs session cookies and encrypts stored access keys                                                         |
+| `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME`      | no                   | MySQL connection. Omit to run on the in-memory store                                                          |
+| `DATABASE_URL`                                                     | no                   | Alternative to the `DB_*` pair: `mysql://user:pass@host:3306/db`                                              |
+| `REDIS_URL`                                                        | no                   | Caching + rate limiting. Falls back to in-process memory                                                      |
+| `APIFY_API_TOKEN`                                                  | no                   | Enables real scraping. Without it, searches generate demo posts                                               |
+| `APIFY_ACTOR_X` / `APIFY_ACTOR_LINKEDIN` / `APIFY_ACTOR_INSTAGRAM` | no                   | Override the default actors                                                                                   |
+| `APIFY_INPUT_X` / `APIFY_INPUT_LINKEDIN` / `APIFY_INPUT_INSTAGRAM` | no                   | Raw JSON actor input with `{{topic}}`, `{{hashtag}}`, `{{limit}}` placeholders                                |
+| `APIFY_ACTOR_*_PROFILE` / `APIFY_INPUT_*_PROFILE`                  | no                   | Actors + input used to fetch a saved creator's posts (`{{handle}}`, `{{profileUrl}}`, `{{limit}}`)            |
+| `APIFY_MAX_ITEMS`                                                  | no                   | Posts requested per platform per scrape (default `40`)                                                        |
+| `SCRAPE_CACHE_TTL`                                                 | no                   | Seconds a topic counts as fresh (default `21600` = 6h)                                                        |
+| `SCRAPE_RATE_LIMIT`                                                | no                   | Scrapes per user/IP per hour (default `20`)                                                                   |
+| `ANTHROPIC_API_KEY`                                                | no                   | AI "why it went viral" breakdowns via Claude (preferred)                                                      |
+| `OPENAI_API_KEY`                                                   | no                   | Same feature via OpenAI (tried after Claude)                                                                  |
+| `GEMINI_API_KEY`                                                   | no                   | Same feature via Google Gemini — free tier (tried after OpenAI)                                               |
+| `OPENAI_MODEL`                                                     | no                   | Defaults to `gpt-4o-mini`                                                                                     |
+| `RESEND_API_KEY`                                                   | no                   | Sends alert emails. Without it alerts are logged to the server console                                        |
+| `ALERT_FROM_EMAIL`                                                 | no                   | From address for alerts, e.g. `ViralLens <alerts@yourdomain.com>`                                             |
+| `APP_URL`                                                          | no                   | Public URL used in alert email links                                                                          |
+| `CRON_SECRET`                                                      | in production        | Protects `/api/cron/*`. Required in production, sent as `Authorization: Bearer <secret>`                      |
+| `DB_CONNECTION_LIMIT`                                              | no                   | MySQL pool size (default `5`)                                                                                 |
+| `DB_IDLE_TIMEOUT`                                                  | no                   | Seconds before idle pool connections are recycled; keep below MySQL `wait_timeout` (default `10`)             |
 
 ### TEST_MODE explained
 
@@ -83,6 +85,45 @@ All variables live in `.env` (copy from `.env.example`). Everything except `TEST
   ```
 
 > Values are read at runtime — `TEST_MODE=of` (a typo) counts as **off**. Only `on`, `true`, `1` and `yes` are truthy.
+
+### Users, admins & access keys (TEST_MODE=off)
+
+With `TEST_MODE=off`, a database and `ACCESS_MODE=invite` (the default), ViralLens is **invite-only**:
+
+- Only the landing page and `/login` are public. Every other page redirects to sign-in, and every API returns
+  `401` until you sign in. There is no public sign-up.
+- Accounts have a **role** — `user` or `admin`.
+- **Two ways to sign in** — **Continue with Google** (for people whose email an admin added, or who open an
+  invite link) and a **6-digit access key**. There are no passwords.
+- **Access keys** — an admin adds a person on **/admin → Users & keys** with just a name (username and email are
+  optional). ViralLens generates a **6-digit access key** (e.g. `482913`, unique per user); the person signs in at **/login**.
+  Users can view their own key on their account page (`/login` while signed in, or Settings). Admins see every
+  key and can **regenerate** it — the old key stops working and that user is signed out on every device.
+- **Invite links** — **/admin → Invite links** creates a single-use sign-up link (optionally tied to an email,
+  role and expiry of 1/7/30 days). The invitee joins with Google — if the invite names an email, only that Google
+  account is accepted — and also gets an access key. Used and expired links can't be reused; pending links can be
+  revoked.
+- Admins can also change roles, disable accounts (signs them out) and delete accounts. You can't demote, disable
+  or delete yourself, and at least one active admin always remains.
+- Keys are stored twice: an HMAC (keyed with `AUTH_SECRET`) for sign-in lookup and an AES-256-GCM copy so they
+  can be displayed again. Because 6 digits are guessable, failed key sign-ins are limited to 10 per IP and 100
+  workspace-wide per 15 minutes; admins should regenerate a key that may have leaked.
+- **Changing `AUTH_SECRET` invalidates every access key** (and signs everyone out) — regenerate keys afterwards.
+
+**Create the first admin** (once, from your machine — it talks to the database in `.env`):
+
+```bash
+npm run db:deploy                                            # make sure the tables exist
+npm run admin -- create --username yourname --name "Your Name"   # prints the access key
+npm run admin -- create --username admin --password "a-strong-password"  # also allow password sign-in
+npm run admin -- create --email you@example.com              # or promote an existing account by email
+npm run admin -- create --username yourname --regenerate     # print a brand-new key
+npm run admin -- list                                        # list server accounts and roles
+```
+
+Then set `TEST_MODE=off` and restart, open `/login`, choose **Access key** and paste it — or **Password** with the
+username/email and password if you passed `--password`. The **Admin panel** is in
+the account menu. Set `APP_URL` to your public URL so invite links point to the right domain.
 
 ---
 
@@ -229,6 +270,35 @@ Tables: `Post`, `User`, `Board`, `SavedPost`, `ScrapeJob`, `WatchedTopic`, `Watc
 (invalid key, quota exceeded) the next is used. With no working key, breakdowns come from a built-in
 rule-based analysis, so the button always works.
 
+### Google — "Continue with Google" sign-in
+
+1. Open <https://console.cloud.google.com/apis/credentials> and pick (or create) a project.
+2. **OAuth consent screen** → **External** → fill in the app name and support email. While the app is in
+   **Testing**, only the Google accounts you list under **Test users** can sign in — add yours, or click
+   **Publish app**. The scopes used (`openid`, `email`, `profile`) are non-sensitive, so no Google review is needed.
+3. **Credentials** → **Create credentials** → **OAuth client ID** → **Web application**.
+4. Under **Authorized redirect URIs** add one entry per environment — they must match exactly:
+
+   ```text
+   http://localhost:3000/api/auth/google/callback
+   https://your-domain.com/api/auth/google/callback
+   ```
+
+   (JavaScript origins aren't needed: the code exchange happens on the server.)
+
+5. Copy the client ID and secret into `.env`:
+
+   ```env
+   GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=GOCSPX-xxxxxxxx
+   ```
+
+6. Set `APP_URL` to the same origin as the redirect URI you registered — the sign-in link is built from it.
+
+> `Error 400: redirect_uri_mismatch` means the callback URL isn't listed in step 4 (check http vs https, the port
+> and the exact path). Google sign-in is skipped entirely when the two variables are empty: the sign-in page then
+> offers access keys only.
+
 ### Redis — caching & rate limits (optional)
 
 - **Upstash**: <https://console.upstash.com> → Create database → copy the **TLS/`rediss://`** connection
@@ -266,16 +336,17 @@ CRON_SECRET=the-generated-value
 
 ## 6. Scripts
 
-| Command             | Purpose                                         |
-| ------------------- | ----------------------------------------------- |
-| `npm run dev`       | Development server (Turbopack) on port 3000     |
-| `npm run build`     | Production build (runs `prisma generate` first) |
-| `npm start`         | Serve the production build                      |
-| `npm run lint`      | ESLint                                          |
-| `npm run typecheck` | Route typegen + `tsc --noEmit`                  |
-| `npm run format`    | Prettier write                                  |
-| `npm run db:deploy` | Apply database migrations                       |
-| `npm run db:studio` | Browse data in Prisma Studio                    |
+| Command             | Purpose                                          |
+| ------------------- | ------------------------------------------------ |
+| `npm run dev`       | Development server (Turbopack) on port 3000      |
+| `npm run build`     | Production build (runs `prisma generate` first)  |
+| `npm start`         | Serve the production build                       |
+| `npm run lint`      | ESLint                                           |
+| `npm run typecheck` | Route typegen + `tsc --noEmit`                   |
+| `npm run format`    | Prettier write                                   |
+| `npm run db:deploy` | Apply database migrations                        |
+| `npm run db:studio` | Browse data in Prisma Studio                     |
+| `npm run admin`     | Create/promote an admin and print its access key |
 
 ---
 
@@ -288,11 +359,10 @@ CRON_SECRET=the-generated-value
 3. Deploy. `vercel.json` already registers the alerts cron:
 
    ```json
-   { "crons": [{ "path": "/api/cron/refresh-watches", "schedule": "0 0 * * *" }] }
+   { "crons": [{ "path": "/api/cron/refresh-watches", "schedule": "0 */6 * * *" }] }
    ```
 
    Vercel sends `Authorization: Bearer $CRON_SECRET` automatically once `CRON_SECRET` is set.
-   Hobby plans only allow daily crons; on Pro you can switch to `0 */6 * * *` (every 6 hours).
 
 4. Allow Vercel's outbound IPs in **Remote MySQL** if your host restricts by IP.
 

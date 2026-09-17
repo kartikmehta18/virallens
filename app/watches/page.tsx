@@ -10,7 +10,7 @@ import { Crosshairs } from "@/components/ui/primitives";
 import { PlatformIcon } from "@/components/icons/platform-icon";
 import { api } from "@/lib/client/api";
 import { PLATFORM_LABELS } from "@/lib/client/filters";
-import { timeAgo } from "@/lib/client/format";
+import { ago } from "@/lib/client/format";
 import { useSession } from "@/lib/client/session";
 import { PLATFORMS, type Platform, type WatchedTopic } from "@/lib/types";
 
@@ -121,7 +121,7 @@ function Watches() {
               </Link>
               <p className="text-muted text-xs">
                 {watch.platforms.map((p) => PLATFORM_LABELS[p]).join(", ")} · threshold {watch.thresholdScore} ·{" "}
-                {watch.lastCheckedAt ? `checked ${timeAgo(watch.lastCheckedAt)} ago` : "not checked yet"}
+                {watch.lastCheckedAt ? `checked ${ago(watch.lastCheckedAt)}` : "not checked yet"}
               </p>
             </div>
             <button

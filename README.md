@@ -18,6 +18,8 @@ three platforms ranked on one virality score, study why they worked, and save th
 - **Boards** — save posts into named collections.
 - **Favorite creators** — save any author from a post (or paste a profile URL), open their profile with stats,
   fetch their latest posts, and filter Explore to just your creators from the search box.
+- **Invite-only access** — user and admin roles, no passwords: people sign in with Google or a 6-digit access
+  key. Admins add users, view and regenerate keys, send single-use invite links and manage roles from `/admin`.
 - **Multi-sort** — pick several sorts at once (e.g. Most liked + Most commented) to blend their rankings.
 - **Alerts** — watch a topic; a cron job re-scrapes it and emails you when a post crosses your threshold.
 - **Runs with zero keys** — optional database (falls back to memory), optional Apify (falls back to demo
@@ -41,11 +43,13 @@ Motion · Recharts · Apify · Claude/OpenAI · Resend
 
 ## Modes
 
-| Setting               | Effect                                                                            |
-| --------------------- | --------------------------------------------------------------------------------- |
-| `TEST_MODE=on`        | Accounts (id, username, email, password) are stored in the browser's localStorage |
-| `TEST_MODE=off`       | Real accounts in the database with signed session cookies                         |
-| `DB_*` set            | Data persists in MySQL via Prisma                                                 |
-| `DB_*` empty          | In-memory store, resets on restart                                                |
-| `APIFY_API_TOKEN` set | Live scraping from the three platforms                                            |
-| no token              | Deterministic demo posts so the whole app still works                             |
+| Setting                   | Effect                                                                            |
+| ------------------------- | --------------------------------------------------------------------------------- |
+| `TEST_MODE=on`            | Accounts (id, username, email, password) are stored in the browser's localStorage |
+| `TEST_MODE=off`           | Real accounts in the database: user/admin roles, access keys, invite links        |
+| `ACCESS_MODE=invite`      | (default) invite-only: sign-in required, admins add users via access keys/invites |
+| `GOOGLE_CLIENT_ID/SECRET` | Adds "Continue with Google" sign-in next to 6-digit access keys                   |
+| `DB_*` set                | Data persists in MySQL via Prisma                                                 |
+| `DB_*` empty              | In-memory store, resets on restart                                                |
+| `APIFY_API_TOKEN` set     | Live scraping from the three platforms                                            |
+| no token                  | Deterministic demo posts so the whole app still works                             |

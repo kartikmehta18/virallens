@@ -4,7 +4,7 @@ import { scorePost } from "../scoring";
 import { creatorKey } from "../creators";
 import type { BoardSummary, FavoriteCreator, Post, ScrapeJob, WatchedTopic } from "../types";
 import { matchesQuery, rankPosts, summarizeCreators } from "./shared";
-import type { Repository, StoredUser } from "./types";
+import type { Repository, StoredInvite, StoredUser } from "./types";
 
 interface MemoryBoard {
   id: string;
@@ -23,6 +23,7 @@ interface MemoryState {
   watches: Map<string, WatchedTopic>;
   alerts: Set<string>;
   creators: Map<string, FavoriteCreator>;
+  invites: Map<string, StoredInvite>;
 }
 
 // Kept on globalThis so the store survives hot reloads in development.
@@ -36,9 +37,11 @@ const state: MemoryState = (globalStore.__viralLensMemory ??= {
   watches: new Map(),
   alerts: new Set(),
   creators: new Map(),
+  invites: new Map(),
 });
 // Stores created before the creators feature existed (hot reload) lack the map.
 state.creators ??= new Map();
+state.invites ??= new Map();
 
 const id = () => randomUUID().replace(/-/g, "").slice(0, 25);
 const now = () => new Date().toISOString();
@@ -171,24 +174,84 @@ export const memoryRepository: Repository = {
     },
     async byEmail(email) {
       const needle = email.toLowerCase();
-      return [...state.users.values()].find((user) => user.email.toLowerCase() === needle) ?? null;
+      return [...state.users.values()].find((user) => user.email?.toLowerCase() === needle) ?? null;
     },
     async byUsername(username) {
       const needle = username.toLowerCase();
       return [...state.users.values()].find((user) => user.username === needle) ?? null;
     },
+    async byAccessKeyHash(hash) {
+      return [...state.users.values()].find((user) => user.accessKeyHash === hash) ?? null;
+    },
+    async byGoogleId(googleId) {
+      return [...state.users.values()].find((user) => user.googleId === googleId) ?? null;
+    },
     async create(data) {
       const user: StoredUser = {
         id: data.id ?? id(),
         username: data.username?.toLowerCase() ?? null,
-        email: data.email.toLowerCase(),
+        email: data.email?.toLowerCase() || null,
         name: data.name,
+        role: data.role ?? "user",
+        avatarUrl: data.avatarUrl ?? null,
         passwordHash: data.passwordHash,
+        googleId: data.googleId ?? null,
         isTest: data.isTest,
+        disabled: false,
+        accessKeyHash: null,
+        accessKeyCipher: null,
+        accessKeyCreatedAt: null,
+        sessionVersion: 0,
+        lastLoginAt: null,
+        invitedById: data.invitedById ?? null,
         createdAt: now(),
       };
       state.users.set(user.id, user);
       return user;
+    },
+    async list() {
+      return [...state.users.values()].filter((u) => !u.isTest).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    },
+    async update(userId, patch) {
+      const user = state.users.get(userId);
+      if (!user) return null;
+      const { bumpSessionVersion, accessKeyCreatedAt, lastLoginAt, ...rest } = patch;
+      Object.assign(user, rest);
+      if (rest.username !== undefined) user.username = rest.username?.toLowerCase() ?? null;
+      if (rest.email !== undefined) user.email = rest.email?.toLowerCase() || null;
+      if (accessKeyCreatedAt !== undefined) user.accessKeyCreatedAt = accessKeyCreatedAt?.toISOString() ?? null;
+      if (lastLoginAt) user.lastLoginAt = lastLoginAt.toISOString();
+      if (bumpSessionVersion) user.sessionVersion++;
+      return user;
+    },
+    async remove(userId) {
+      return state.users.delete(userId);
+    },
+    async countAdmins() {
+      return [...state.users.values()].filter((u) => u.role === "admin" && !u.disabled).length;
+    },
+  },
+
+  invites: {
+    async create(data) {
+      const invite: StoredInvite = { ...data, id: id(), usedAt: null, usedById: null, createdAt: now() };
+      state.invites.set(invite.id, invite);
+      return invite;
+    },
+    async list() {
+      return [...state.invites.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    },
+    async byTokenHash(hash) {
+      return [...state.invites.values()].find((invite) => invite.tokenHash === hash) ?? null;
+    },
+    async markUsed(inviteId, userId) {
+      const invite = state.invites.get(inviteId);
+      if (!invite || invite.usedAt) return false;
+      Object.assign(invite, { usedAt: now(), usedById: userId });
+      return true;
+    },
+    async remove(inviteId) {
+      return state.invites.delete(inviteId);
     },
   },
 

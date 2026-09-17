@@ -13,7 +13,7 @@ import { segmentClass } from "@/components/ui/form";
 import { Crosshairs } from "@/components/ui/primitives";
 import { api } from "@/lib/client/api";
 import { DEFAULT_FILTERS, PLATFORM_LABELS, SORT_LABELS, filtersToParams } from "@/lib/client/filters";
-import { formatCount, timeAgo } from "@/lib/client/format";
+import { formatCount, ago } from "@/lib/client/format";
 import { useCreatorMutations, useCreatorProfile } from "@/lib/client/hooks";
 import { usePreferences } from "@/lib/client/preferences";
 import { creatorKey, parseCreatorKey } from "@/lib/creators";
@@ -131,7 +131,7 @@ function CreatorProfileView({ creatorRef }: { creatorRef: CreatorRef }) {
                     <span aria-hidden className="hidden sm:inline">
                       ·
                     </span>
-                    <span className="basis-full sm:basis-auto">last post {timeAgo(stats.lastPostAt)} ago</span>
+                    <span className="basis-full sm:basis-auto">last post {ago(stats.lastPostAt)}</span>
                   </>
                 )}
               </p>

@@ -16,6 +16,17 @@ export function timeAgo(iso: string): string {
   return "now";
 }
 
+/** "5m ago", or "just now" for timestamps under a minute old. */
+export function ago(iso: string): string {
+  const t = timeAgo(iso);
+  return t === "now" ? "just now" : `${t} ago`;
+}
+
+/** Compact time until a future timestamp ("3d", "5h"); "now" once it has passed. */
+export function timeUntil(iso: string): string {
+  return timeAgo(new Date(2 * Date.now() - new Date(iso).getTime()).toISOString());
+}
+
 const PROXIED_HOSTS = /(cdninstagram\.com|fbcdn\.net|licdn\.com|twimg\.com)$/;
 
 /** Routes hotlink-protected social CDN media through /api/media. */
