@@ -1,6 +1,7 @@
 import "server-only";
+import { understandQuery } from "../ai/query";
 import { getCache } from "../cache";
-import type { RawItem } from "../apify/client";
+import type { RawItem, ScrapePage } from "../apify/client";
 import { generateDemoPosts } from "../apify/demo";
 import { scrapeInstagram } from "../apify/instagram";
 import { scrapeLinkedIn } from "../apify/linkedin";
@@ -9,10 +10,13 @@ import { scrapeX } from "../apify/x";
 import { env } from "../env";
 import { ApiError } from "../http";
 import { getRepo } from "../repo";
+import type { Repository } from "../repo/types";
 import { normalizeTopic } from "../text";
 import type { Platform, Post, PostInput, ScrapeJob, ScrapeRunInfo } from "../types";
 
-const SCRAPERS: Record<Platform, (topic: string, limit: number, onStart?: (runId: string) => void) => Promise<RawItem[]>> = {
+type Scraper = (topic: string, limit: number, onStart?: (runId: string) => void, page?: ScrapePage) => Promise<RawItem[]>;
+
+const SCRAPERS: Record<Platform, Scraper> = {
   x: scrapeX,
   linkedin: scrapeLinkedIn,
   instagram: scrapeInstagram,
@@ -20,25 +24,27 @@ const SCRAPERS: Record<Platform, (topic: string, limit: number, onStart?: (runId
 
 const freshKey = (platform: Platform, topic: string) => `scrape:fresh:${platform}:${topic.toLowerCase()}`;
 const inflightKey = (platforms: Platform[], topic: string) => `scrape:inflight:${[...platforms].sort().join(",")}:${topic.toLowerCase()}`;
-/** How deep (results per platform) "load more" has already scraped a topic. */
-const depthKey = (platform: Platform, topic: string) => `scrape:depth:${platform}:${topic.toLowerCase()}`;
-const DEPTH_TTL = 7 * 24 * 60 * 60;
-
-/** "Load more" doubles the depth each time, up to 4× APIFY_MAX_ITEMS (and never past the 500 hard cap). */
-const maxDepth = () => Math.min(env.apifyMaxItems * 4, 500);
+/** "Load more" clicks so far for a topic on a platform, and whether its results ran out. */
+const stepKey = (platform: Platform, topic: string) => `scrape:more:${platform}:${topic.toLowerCase()}`;
+const doneKey = (platform: Platform, topic: string) => `scrape:more-done:${platform}:${topic.toLowerCase()}`;
+const MORE_TTL = 7 * 24 * 60 * 60;
+/** Load-more clicks per topic and platform (each costs about one normal search) before "exhausted". */
+const MAX_STEPS = 6;
+/** Ids of newly added posts kept on each run, for the "Just fetched" section. */
+const NEW_IDS_CAP = 200;
 
 export type ScrapeRequestResult =
   | { status: "cached"; platforms: Platform[] }
-  | { status: "exhausted"; platforms: Platform[]; limit: number }
+  | { status: "exhausted"; platforms: Platform[] }
   | { status: "started" | "inflight"; job: ScrapeJob };
 
 /**
  * Decides whether a topic needs a fresh scrape. Returns "cached" if every platform was scraped
  * within SCRAPE_CACHE_TTL, otherwise creates a job (the caller runs it in the background).
  *
- * `more` is "load more": actors return their top N results, so re-running at the same N finds nothing
- * new. Instead it re-scrapes deeper (double the previous depth) — the new posts are the ones past the
- * old cut-off. Returns "exhausted" once every platform is at the maximum depth.
+ * `more` is "load more": re-running the same search would return (and bill) the same top results, so each
+ * click asks every platform for its next slice instead — see planStep(). Returns "exhausted" once every
+ * platform has run out or used MAX_STEPS clicks.
  */
 export async function requestScrape(options: {
   topic: string;
@@ -53,18 +59,19 @@ export async function requestScrape(options: {
   const cache = await getCache();
   const repo = await getRepo();
 
-  const limits = new Map<Platform, number>();
+  const steps = new Map<Platform, number>();
   if (options.more) {
     for (const platform of options.platforms) {
-      const depth = Number(await cache.get(depthKey(platform, topic))) || env.apifyMaxItems;
-      if (depth < maxDepth()) limits.set(platform, Math.min(depth * 2, maxDepth()));
+      if (await cache.get(doneKey(platform, topic))) continue;
+      const step = (Number(await cache.get(stepKey(platform, topic))) || 0) + 1;
+      if (step <= MAX_STEPS) steps.set(platform, step);
     }
-    if (!limits.size) return { status: "exhausted", platforms: options.platforms, limit: maxDepth() };
+    if (!steps.size) return { status: "exhausted", platforms: options.platforms };
   }
 
   const stale: Platform[] = [];
   for (const platform of options.platforms) {
-    if (options.more ? limits.has(platform) : options.force || !(await cache.get(freshKey(platform, topic)))) stale.push(platform);
+    if (options.more ? steps.has(platform) : options.force || !(await cache.get(freshKey(platform, topic)))) stale.push(platform);
   }
   if (!stale.length) return { status: "cached", platforms: options.platforms };
 
@@ -82,21 +89,47 @@ export async function requestScrape(options: {
     topic,
     platforms: stale,
     userId: options.userId,
-    runs: stale.map((platform) => ({ platform, source, status: "pending", ...(limits.has(platform) && { limit: limits.get(platform) }) })),
+    runs: stale.map((platform) => ({ platform, source, status: "pending", ...(steps.has(platform) && { step: steps.get(platform) }) })),
   });
   await cache.set(inflightKey(stale, topic), job.id, 15 * 60);
-  // Claim the new depth now, so a second click while this job runs goes deeper still instead of repeating it.
-  for (const [platform, limit] of limits) await cache.set(depthKey(platform, topic), String(limit), DEPTH_TTL);
+  // Claim the step now, so a second click while this job runs fetches the slice after it.
+  for (const [platform, step] of steps) await cache.set(stepKey(platform, topic), String(step), MORE_TTL);
   return { status: "started", job };
 }
 
-async function fetchPlatform(platform: Platform, topic: string, limit: number, onStart: (runId: string) => void): Promise<PostInput[]> {
+/**
+ * What a "load more" step fetches. Odd steps page further into the topic's own results (X: older than the
+ * oldest stored post; LinkedIn: newest-first, then later result pages; Instagram: reels/posts, deeper).
+ * Even steps search a related query from understandQuery() (Gemini) when there is one ("devops" →
+ * "kubernetes"); its posts are stored under the original topic so they show in the current results.
+ */
+async function planStep(
+  repo: Repository,
+  platform: Platform,
+  topic: string,
+  step: number | undefined,
+): Promise<{ query: string; page?: ScrapePage }> {
+  if (!step) return { query: topic };
+  const related = (await understandQuery(topic)).related;
+  if (step % 2 === 0 && related[step / 2 - 1]) return { query: related[step / 2 - 1] };
+  const index = step - Math.min(Math.floor(step / 2), related.length);
+  const before = platform === "x" ? await repo.posts.oldestPublished("x", { topic }) : null;
+  return { query: topic, page: { index, before } };
+}
+
+async function fetchPlatform(
+  platform: Platform,
+  query: string,
+  topic: string,
+  onStart: (runId: string) => void,
+  page?: ScrapePage,
+): Promise<PostInput[]> {
   if (!env.apifyToken) {
     await new Promise((resolve) => setTimeout(resolve, 1200 + Math.random() * 1500));
-    // Demo posts are seeded, so a deeper "load more" returns the same first posts plus new ones.
-    return generateDemoPosts(topic, platform, Math.round(18 * Math.min(limit / env.apifyMaxItems, 4)));
+    // Demo posts are seeded per query, so a later page returns the same first posts plus new ones.
+    return generateDemoPosts(query, platform, Math.min(18 * (page ? page.index + 1 : 1), 126)).map((post) => ({ ...post, topic }));
   }
-  const raw = await SCRAPERS[platform](topic, limit, onStart);
+  const raw = await SCRAPERS[platform](query, env.apifyMaxItems, onStart, page);
   return raw.map((item) => NORMALIZERS[platform](item, topic)).filter((post): post is PostInput => post !== null);
 }
 
@@ -118,14 +151,24 @@ export async function executeScrapeJob(jobId: string): Promise<Post[]> {
       run.status = "running";
       await persistRuns();
       try {
-        const inputs = await fetchPlatform(platform, job.topic, run.limit ?? env.apifyMaxItems, (runId) => {
-          run.runId = runId;
-          void persistRuns();
-        });
-        const posts = await repo.posts.upsertMany(inputs);
+        const plan = await planStep(repo, platform, job.topic, run.step);
+        if (plan.query !== job.topic) run.query = plan.query;
+        const inputs = await fetchPlatform(
+          platform,
+          plan.query,
+          job.topic,
+          (runId) => {
+            run.runId = runId;
+            void persistRuns();
+          },
+          plan.page,
+        );
+        const { posts, createdIds } = await repo.posts.upsertMany(inputs);
         saved.push(...posts);
-        Object.assign(run, { status: "succeeded", items: posts.length });
+        Object.assign(run, { status: "succeeded", items: posts.length, newPostIds: createdIds.slice(0, NEW_IDS_CAP) });
         await cache.set(freshKey(platform, job.topic), "1", env.scrapeCacheTtl);
+        // A page of the topic's own results with nothing new: this platform has run out.
+        if (run.step && plan.page && !createdIds.length) await cache.set(doneKey(platform, job.topic), "1", MORE_TTL);
       } catch (error) {
         Object.assign(run, { status: "failed", error: error instanceof Error ? error.message : String(error) });
         console.error(`[virallens] ${platform} scrape failed for "${job.topic}":`, error);

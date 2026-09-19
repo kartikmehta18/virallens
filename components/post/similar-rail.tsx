@@ -1,26 +1,65 @@
 "use client";
 
-import { useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { ChevronLeft, ChevronRight, Loader2, Plus, Sparkles } from "lucide-react";
 import { motion } from "motion/react";
-import { useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { PlatformLink } from "@/components/icons/platform-link";
 import { mediaLayoutId, textGradient } from "@/components/grid/post-card";
+import { api } from "@/lib/client/api";
 import { formatCount, mediaSrc } from "@/lib/client/format";
-import { useSimilarPosts } from "@/lib/client/hooks";
+import { newPostIdsOf, scrapeJobDone, useSimilarPosts } from "@/lib/client/hooks";
 import { setOpenScope } from "@/lib/client/transition";
-import type { Post } from "@/lib/types";
+import type { Post, PostPage, ScrapeJob } from "@/lib/types";
 
 export const SIMILAR_SCOPE = "similar";
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+type MoreResponse = { status: "started" | "inflight" | "cached" | "exhausted"; jobId?: string; query: string };
+
+const tileClass =
+  "border-border text-muted hover:bg-surface-2 hover:text-foreground flex aspect-[3/4] w-40 shrink-0 snap-start flex-col items-center justify-center gap-2 rounded-[10px] border border-dashed p-3 text-center text-xs transition disabled:pointer-events-none sm:w-44";
+
 export function SimilarRail({ postId, onSelect }: { postId: string; onSelect: (post: Post) => void }) {
-  const { data: posts, isLoading } = useSimilarPosts(postId);
+  const similar = useSimilarPosts(postId);
   const queryClient = useQueryClient();
   const scroller = useRef<HTMLDivElement>(null);
+  // Posts that "Find more like this" fetched from the platforms, shown after the ranked ones.
+  const [extra, setExtra] = useState<Post[]>([]);
+  const [note, setNote] = useState<string | null>(null);
+
+  const posts = useMemo(() => {
+    const ranked = similar.data?.pages.flatMap((p) => p.items) ?? [];
+    const seen = new Set(ranked.map((p) => p.id));
+    return [...ranked, ...extra.filter((p) => !seen.has(p.id))];
+  }, [similar.data, extra]);
+
+  // Stored similar posts ran out: search the platforms for this post's subject (Gemini names it, cached),
+  // wait for that fetch, then append the posts it added.
+  const findMore = useMutation({
+    mutationFn: async () => {
+      const start = await api<MoreResponse>(`/api/posts/${postId}/similar/more`, { method: "POST" });
+      if (!start.jobId) return { added: [] as Post[], exhausted: start.status === "exhausted" };
+      let job: ScrapeJob;
+      do {
+        await sleep(2500);
+        job = await api<ScrapeJob>(`/api/scrape/status/${start.jobId}`);
+      } while (!scrapeJobDone(job));
+      const ids = newPostIdsOf(job).slice(0, 60);
+      const added = ids.length ? (await api<PostPage>(`/api/posts?ids=${ids.join(",")}&limit=60`)).items : [];
+      return { added, exhausted: false };
+    },
+    onMutate: () => setNote(null),
+    onSuccess: ({ added, exhausted }) => {
+      setExtra((current) => [...current, ...added.filter((p) => !current.some((c) => c.id === p.id))]);
+      if (!added.length) setNote(exhausted ? "That's everything we can find for now." : "No new similar posts this time.");
+      if (added.length) queryClient.invalidateQueries({ queryKey: ["posts"] });
+    },
+    onError: (error) => setNote(error.message),
+  });
 
   const scrollBy = (dir: number) => scroller.current?.scrollBy({ left: dir * scroller.current.clientWidth * 0.8, behavior: "smooth" });
-
-  if (!isLoading && !posts?.length) return null;
 
   return (
     <section className="mt-8">
@@ -45,9 +84,9 @@ export function SimilarRail({ postId, onSelect }: { postId: string; onSelect: (p
       </div>
 
       <div ref={scroller} className="no-scrollbar -mx-1 flex snap-x snap-mandatory gap-3 overflow-x-auto px-1 pb-2">
-        {isLoading &&
+        {similar.isLoading &&
           Array.from({ length: 6 }, (_, i) => <div key={i} className="skeleton aspect-[3/4] w-40 shrink-0 rounded-lg sm:w-44" />)}
-        {posts?.map((post) => (
+        {posts.map((post) => (
           <div key={post.id} className="relative w-40 shrink-0 snap-start sm:w-44">
             <button
               onClick={() => {
@@ -87,6 +126,25 @@ export function SimilarRail({ postId, onSelect }: { postId: string; onSelect: (p
             <PlatformLink post={post} className="absolute top-2 left-2 size-6" iconClassName="size-3" />
           </div>
         ))}
+
+        {!similar.isLoading &&
+          (similar.hasNextPage ? (
+            <button type="button" onClick={() => similar.fetchNextPage()} disabled={similar.isFetchingNextPage} className={tileClass}>
+              {similar.isFetchingNextPage ? <Loader2 className="size-5 animate-spin" /> : <Plus className="size-5" />}
+              <span className="text-foreground text-sm font-medium">Load more</span>
+              <span>More posts like this one</span>
+            </button>
+          ) : (
+            <button type="button" onClick={() => findMore.mutate()} disabled={findMore.isPending} className={tileClass}>
+              {findMore.isPending ? <Loader2 className="size-5 animate-spin" /> : <Sparkles className="size-5" />}
+              <span className="text-foreground text-sm font-medium">{findMore.isPending ? "Finding more…" : "Load more"}</span>
+              <span>
+                {findMore.isPending
+                  ? "Searching X, LinkedIn and Instagram for this subject — about a minute."
+                  : (note ?? (posts.length ? "Fetch new posts like this one" : "No similar posts yet — fetch some"))}
+              </span>
+            </button>
+          ))}
       </div>
     </section>
   );

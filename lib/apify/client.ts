@@ -6,6 +6,12 @@ const TERMINAL = new Set(["SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"]);
 
 export type RawItem = Record<string, unknown>;
 
+/** A "load more" slice: `index` 1, 2, … and, for X, the date to page back from (oldest stored post). */
+export interface ScrapePage {
+  index: number;
+  before?: string | null;
+}
+
 interface ApifyRun {
   id: string;
   status: string;

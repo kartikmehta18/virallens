@@ -1,4 +1,5 @@
 import { creatorKey } from "../creators";
+import { parseSearch, postHaystack, scoreText, type ParsedSearch } from "../search";
 import type { CreatorRef, Post, PostQuery, SortKey } from "../types";
 import type { CreatorSummary } from "./types";
 
@@ -22,8 +23,19 @@ export const SORT_FIELDS: Record<SortKey, keyof Post> = {
   memes: "memeScore",
 };
 
-/** Ranks posts by the average percentile rank across several sort keys (single key: plain descending sort). */
-export function rankPosts(posts: Post[], sorts: SortKey[]): Post[] {
+/**
+ * Ranks posts by the average percentile rank across several sort keys (single key: plain descending sort).
+ * `tier` (keyword search) puts higher tiers first — preferred creators, then relevance — keeping the sort
+ * order inside each tier, like the SQL ORDER BY pref, rel, blend.
+ */
+export function rankPosts(posts: Post[], sorts: SortKey[], tier?: (post: Post) => number): Post[] {
+  const ranked = rankBySorts(posts, sorts);
+  if (!tier) return ranked;
+  const tiers = new Map(ranked.map((p) => [p.id, tier(p)]));
+  return ranked.sort((a, b) => tiers.get(b.id)! - tiers.get(a.id)!); // stable: keeps the sort order within a tier
+}
+
+function rankBySorts(posts: Post[], sorts: SortKey[]): Post[] {
   const value = (post: Post, key: SortKey) => {
     const v = post[SORT_FIELDS[key]];
     return typeof v === "string" ? new Date(v).getTime() : ((v as number | null) ?? 0);
@@ -85,7 +97,19 @@ export function summarizeCreators(posts: Post[], refs: CreatorRef[]): Record<str
   return result;
 }
 
-export function matchesQuery(post: Post, query: PostQuery): boolean {
+/** Keyword search tier for the memory backend: preferred creator first, then relevance (terms + phrase). */
+export function searchTier(post: Post, parsed: ParsedSearch | null, prefer: Set<string>) {
+  const pref = prefer.has(creatorKey({ platform: post.platform, handle: post.authorHandle })) ? 1 : 0;
+  const relevance = parsed ? scoreText(postHaystack(post), parsed).relevance : 0;
+  return pref * 1000 + relevance;
+}
+
+export function matchesQuery(
+  post: Post,
+  query: PostQuery,
+  parsed: ParsedSearch | null = query.topic ? parseSearch(query.topic) : null,
+): boolean {
+  if (query.ids?.length && !query.ids.includes(post.id)) return false;
   if (query.platforms?.length && !query.platforms.includes(post.platform)) return false;
   if (query.mediaTypes?.length && !query.mediaTypes.includes(post.mediaType)) return false;
   const published = new Date(post.publishedAt).getTime();
@@ -94,10 +118,6 @@ export function matchesQuery(post: Post, query: PostQuery): boolean {
   if (query.creators?.length && !query.creators.some((c) => c.platform === post.platform && c.handle === post.authorHandle.toLowerCase())) {
     return false;
   }
-  if (query.topic) {
-    const needle = query.topic.toLowerCase();
-    const haystack = `${post.topic}\n${post.caption}\n${post.tags.join(" ")}\n${post.authorHandle}`.toLowerCase();
-    if (!haystack.includes(needle)) return false;
-  }
+  if (parsed && !scoreText(postHaystack(post), parsed).ok) return false;
   return true;
 }

@@ -64,7 +64,8 @@ export function SearchComposer({ filters, onChange, onSearch, onRefresh, scrapin
         ? PLATFORM_LABELS[filters.platforms[0]]
         : `${filters.platforms.length} platforms`;
   const formatLabel = filters.mediaTypes.length === 0 ? "Any format" : filters.mediaTypes.map((m) => MEDIA_LABELS[m]).join(", ");
-  const canSend = draft.trim().length >= 2 || (draft.trim() === "" && filters.topic !== "");
+  // With creators selected an empty search is fine: it fetches their new posts.
+  const canSend = draft.trim().length >= 2 || (draft.trim() === "" && (filters.topic !== "" || filters.creators.length > 0));
 
   const panel = (
     <form
@@ -216,7 +217,11 @@ export function SearchComposer({ filters, onChange, onSearch, onRefresh, scrapin
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={onKeyDown}
         rows={1}
-        placeholder="Search a viral topic or #hashtag"
+        placeholder={
+          filters.creators.length
+            ? "Search a topic — your creators' posts come first"
+            : 'Search a topic, "exact phrase", -exclude or #hashtag'
+        }
         aria-label="Search topic"
         className="text-foreground placeholder:text-muted/70 block field-sizing-content max-h-32 min-h-11 w-full resize-none bg-transparent px-4 py-2 text-base leading-relaxed outline-none sm:px-5 sm:py-2.5 sm:text-[15px]"
       />
@@ -309,8 +314,18 @@ export function SearchComposer({ filters, onChange, onSearch, onRefresh, scrapin
 
         <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
           {filters.topic && <WatchButton topic={filters.topic} platforms={filters.platforms} />}
-          {filters.topic && (
-            <IconButton onClick={onRefresh} disabled={scraping} label="Fetch fresh posts">
+          {(filters.topic || filters.creators.length > 0) && (
+            <IconButton
+              onClick={onRefresh}
+              disabled={scraping}
+              label={
+                filters.creators.length
+                  ? filters.topic
+                    ? "Fetch fresh posts for the topic and your creators"
+                    : "Fetch new posts from the selected creators"
+                  : "Fetch fresh posts"
+              }
+            >
               <RefreshCw className={`size-4 ${scraping ? "animate-spin" : ""}`} />
             </IconButton>
           )}

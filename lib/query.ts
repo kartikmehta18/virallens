@@ -25,6 +25,8 @@ function parseDate(value: string | null, endOfDay = false): Date | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
+const MAX_IDS = 200;
+
 /** Parses /api/posts search params into a validated PostQuery. */
 export function parsePostQuery(params: URLSearchParams): PostQuery {
   // sort=likes,comments blends several rankings; unknown keys are dropped, empty falls back to trending.
@@ -32,17 +34,26 @@ export function parsePostQuery(params: URLSearchParams): PostQuery {
   const sort: SortKey[] = sorts.length ? sorts : ["trending"];
   const range = (DATE_RANGES as readonly string[]).includes(params.get("dateRange") ?? "") ? (params.get("dateRange") as DateRange) : "all";
   const hours = RANGE_HOURS[range];
+  const topic = params.get("topic")?.trim().slice(0, 200) || undefined;
+  const creators = parseCreatorKeys(params.get("creator"));
+  const ids = (params.get("ids") ?? "")
+    .split(",")
+    .filter((id) => /^[a-z0-9]{8,40}$/i.test(id))
+    .slice(0, MAX_IDS);
 
   return {
-    topic: params.get("topic")?.trim().slice(0, 200) || undefined,
+    topic,
     platforms: listParam<Platform>(params.get("platform"), PLATFORMS),
     mediaTypes: listParam<MediaType>(params.get("mediaType"), MEDIA_TYPES),
-    creators: parseCreatorKeys(params.get("creator")),
+    // With a keyword search, selected creators are boosted (their posts first) rather than a filter.
+    ...(topic && creators.length ? { preferCreators: creators } : { creators }),
+    ...(ids.length && { ids }),
     sort,
     from: hours ? new Date(Date.now() - hours * 3_600_000) : range === "custom" ? parseDate(params.get("from")) : undefined,
     to: range === "custom" ? parseDate(params.get("to"), true) : undefined,
     page: Math.max(1, Number(params.get("page")) || 1),
-    limit: Math.min(60, Math.max(1, Number(params.get("limit")) || 24)),
+    // An ids list ("just fetched" posts) may return all of them at once.
+    limit: Math.min(ids.length ? MAX_IDS : 60, Math.max(1, Number(params.get("limit")) || 24)),
   };
 }
 

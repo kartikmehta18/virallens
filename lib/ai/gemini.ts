@@ -8,8 +8,11 @@ import { BREAKDOWN_SYSTEM, breakdownPrompt } from "./prompt";
 const DEFAULT_MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest"];
 const RETRYABLE = new Set([404, 429, 500, 503]);
 
-/** Google Gemini provider (free tier key from Google AI Studio). Uses JSON mode with a response schema. */
-export async function geminiBreakdown(post: Post): Promise<string[] | null> {
+/**
+ * One Gemini call in JSON mode (free tier key from Google AI Studio): tries each model in turn on
+ * retryable errors and returns the parsed JSON object.
+ */
+export async function geminiJson<T>(system: string, prompt: string, responseSchema: Record<string, unknown>): Promise<T> {
   const preferred = process.env.GEMINI_MODEL?.trim();
   const models = [...new Set([...(preferred ? [preferred] : []), ...DEFAULT_MODELS])];
   let lastError: Error | null = null;
@@ -19,16 +22,9 @@ export async function geminiBreakdown(post: Post): Promise<string[] | null> {
       method: "POST",
       headers: { "x-goog-api-key": env.geminiKey ?? "", "Content-Type": "application/json" },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: BREAKDOWN_SYSTEM }] },
-        contents: [{ role: "user", parts: [{ text: breakdownPrompt(post) }] }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: "OBJECT",
-            properties: { bullets: { type: "ARRAY", items: { type: "STRING" } } },
-            required: ["bullets"],
-          },
-        },
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: "application/json", responseSchema },
       }),
     });
     if (!res.ok) {
@@ -38,9 +34,18 @@ export async function geminiBreakdown(post: Post): Promise<string[] | null> {
     }
     const data = await res.json();
     const text: string = data.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text ?? "").join("") ?? "";
-    const parsed = JSON.parse(text || "{}");
-    const bullets: string[] = Array.isArray(parsed.bullets) ? parsed.bullets.map((b: unknown) => String(b).trim()).filter(Boolean) : [];
-    return bullets.length ? bullets.slice(0, 5) : null;
+    return JSON.parse(text || "{}") as T;
   }
   throw lastError ?? new Error("Gemini: no model available");
+}
+
+/** Google Gemini provider for the "why this went viral" breakdown. */
+export async function geminiBreakdown(post: Post): Promise<string[] | null> {
+  const parsed = await geminiJson<{ bullets?: unknown }>(BREAKDOWN_SYSTEM, breakdownPrompt(post), {
+    type: "OBJECT",
+    properties: { bullets: { type: "ARRAY", items: { type: "STRING" } } },
+    required: ["bullets"],
+  });
+  const bullets: string[] = Array.isArray(parsed.bullets) ? parsed.bullets.map((b: unknown) => String(b).trim()).filter(Boolean) : [];
+  return bullets.length ? bullets.slice(0, 5) : null;
 }

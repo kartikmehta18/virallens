@@ -54,6 +54,10 @@ export interface PostQuery {
   mediaTypes?: MediaType[];
   /** Only posts by these creators. */
   creators?: CreatorRef[];
+  /** With a topic: these creators' matching posts are ranked first (everyone else's still show). */
+  preferCreators?: CreatorRef[];
+  /** Only these post ids (e.g. the posts a "load more" fetch just added), still filtered and sorted. */
+  ids?: string[];
   /** One or more sort keys. Several keys blend their rankings (average percentile rank). */
   sort: SortKey[];
   from?: Date;
@@ -68,6 +72,8 @@ export interface PostPage {
   limit: number;
   total: number;
   hasMore: boolean;
+  /** With preferCreators: how many of `total` are by those creators (they come first). */
+  creatorMatches?: number;
 }
 
 export const ROLES = ["user", "admin"] as const;
@@ -134,9 +140,13 @@ export interface ScrapeRunInfo {
   source: "apify" | "demo";
   status: "pending" | "running" | "succeeded" | "failed";
   runId?: string;
-  /** Results requested from the actor; set on "load more" (deeper) scrapes, else APIFY_MAX_ITEMS. */
-  limit?: number;
+  /** "Load more" step (1, 2, …): which next slice this run asked the platform for. */
+  step?: number;
+  /** Set when a load-more step searched a related query instead of the topic itself. */
+  query?: string;
   items?: number;
+  /** Posts this run added that weren't stored before (capped). */
+  newPostIds?: string[];
   error?: string;
 }
 
@@ -213,6 +223,14 @@ export interface SessionInfo {
   /** GOOGLE_CLIENT_ID/SECRET configured (and server accounts in use). */
   googleEnabled: boolean;
   user: User | null;
+}
+
+/** AI reading of a search query (GET /api/search/understand). */
+export interface QueryInsight {
+  /** The query with spelling fixed, or null when it was already fine. */
+  corrected: string | null;
+  /** Up to 4 short related searches, most useful first. */
+  related: string[];
 }
 
 export interface TimelinePoint {
