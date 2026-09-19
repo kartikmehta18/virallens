@@ -1,7 +1,7 @@
 "use client";
 
 import { keepPreviousData, useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Loader2, SearchX } from "lucide-react";
+import { ChevronDown, Loader2, SearchX } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BentoGrid, GridSkeleton, featuredThreshold } from "@/components/grid/bento-grid";
@@ -16,7 +16,7 @@ import { TrendChart } from "./trend-chart";
 
 const PAGE_SIZE = 24;
 
-type ScrapeResponse = { status: "cached" } | { status: "started" | "inflight"; jobId: string };
+type ScrapeResponse = { status: "cached" | "exhausted" } | { status: "started" | "inflight"; jobId: string };
 
 export function ExploreView() {
   const router = useRouter();
@@ -42,6 +42,9 @@ export function ExploreView() {
   }
 
   const [jobId, setJobId] = useState<string | null>(null);
+  // "Load more" at the end of the results: the job it started, and the post count before it ran.
+  const [more, setMore] = useState<{ topic: string; jobId: string | null; baseline: number; done: boolean } | null>(null);
+  const [exhaustedTopic, setExhaustedTopic] = useState<string | null>(null);
   const apiParams = filtersToParams(filters).toString();
 
   const updateFilters = useCallback(
@@ -59,7 +62,7 @@ export function ExploreView() {
     mutationFn: ({ topic, force }: { topic: string; force?: boolean }) =>
       api<ScrapeResponse>("/api/scrape", { method: "POST", json: { topic, platforms: filters.platforms, force } }),
     onSuccess: (result) => {
-      if (result.status !== "cached") setJobId(result.jobId);
+      if ("jobId" in result) setJobId(result.jobId);
     },
   });
 
@@ -92,6 +95,7 @@ export function ExploreView() {
         queryClient.invalidateQueries({ queryKey: ["posts"] });
         queryClient.invalidateQueries({ queryKey: ["timeline"] });
       }
+      setMore((current) => (current?.jobId === job.id ? { ...current, done: true } : current));
     },
     [queryClient],
   );
@@ -112,6 +116,27 @@ export function ExploreView() {
     observer.observe(node);
     return () => observer.disconnect();
   }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+
+  // Scrapes deeper than last time (the API doubles the per-platform depth) so the sources return posts
+  // past the previous cut-off. Only for a topic: without one there is nothing to search the sources for.
+  const loadMore = useMutation({
+    mutationFn: (topic: string) =>
+      api<ScrapeResponse>("/api/scrape", { method: "POST", json: { topic, platforms: filters.platforms, more: true } }),
+    onMutate: (topic) => setMore({ topic, jobId: null, baseline: total, done: false }),
+    onSuccess: (result, topic) => {
+      if ("jobId" in result) {
+        setJobId(result.jobId);
+        setMore((current) => current && { ...current, jobId: result.jobId });
+      } else {
+        setMore(null);
+        if (result.status === "exhausted") setExhaustedTopic(topic);
+      }
+    },
+    onError: () => setMore(null),
+  });
+  const moreForTopic = more?.topic === filters.topic ? more : null;
+  const loadingMore = loadMore.isPending || Boolean(moreForTopic && !moreForTopic.done);
+  const added = moreForTopic?.done && !posts.isFetching ? total - moreForTopic.baseline : null;
 
   const scraping = scrape.isPending || Boolean(jobId);
   const docked = prefs.searchPosition === "bottom";
@@ -188,8 +213,53 @@ export function ExploreView() {
               <GridSkeleton count={5} />
             </div>
           )}
-          {!posts.hasNextPage && items.length > PAGE_SIZE && (
-            <p className="text-muted py-8 text-center text-sm">You&apos;ve reached the end.</p>
+          {posts.hasNextPage ? (
+            // Infinite scroll normally gets here first; the button covers slow connections and keyboard users.
+            !posts.isFetchingNextPage && (
+              <div className="flex justify-center py-8">
+                <button type="button" onClick={() => fetchNextPage()} className="btn-secondary">
+                  Load more <ChevronDown className="size-4" />
+                </button>
+              </div>
+            )
+          ) : (
+            <div className="flex flex-col items-center gap-3 px-4 py-8 text-center">
+              {added !== null && (
+                <p className="text-sm">
+                  {added > 0
+                    ? `Added ${added.toLocaleString()} more post${added === 1 ? "" : "s"}.`
+                    : "No new posts this time — the sources returned ones you already have."}
+                </p>
+              )}
+              <p className="text-muted text-sm">You&apos;ve reached the end.</p>
+              {filters.topic ? (
+                exhaustedTopic === filters.topic ? (
+                  <p className="text-muted max-w-md text-xs">
+                    That&apos;s as deep as ViralLens searches for “{filters.topic}”. Try a related topic for more.
+                  </p>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => loadMore.mutate(filters.topic)}
+                      disabled={loadingMore || scrape.isPending}
+                      className="btn-secondary"
+                    >
+                      {loadingMore ? <Loader2 className="size-4 animate-spin" /> : <ChevronDown className="size-4" />}
+                      {loadingMore ? "Fetching more posts…" : "Load more posts"}
+                    </button>
+                    <p className="text-muted max-w-md text-xs">
+                      {loadingMore
+                        ? "Searching deeper on each platform — usually under a minute."
+                        : `Searches X, LinkedIn and Instagram deeper for “${filters.topic}”.`}
+                    </p>
+                  </>
+                )
+              ) : (
+                <p className="text-muted max-w-md text-xs">Search a topic to fetch more posts from the sources.</p>
+              )}
+              {loadMore.isError && <p className="text-xs text-red-400">{loadMore.error.message}</p>}
+            </div>
           )}
         </div>
       )}

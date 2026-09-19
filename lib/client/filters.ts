@@ -70,6 +70,7 @@ export const SORT_LABELS: Record<SortKey, string> = {
   comments: "Most commented",
   shares: "Most shared",
   newest: "Newest",
+  memes: "Memes",
 };
 
 export const RANGE_LABELS: Record<DateRange, string> = {
