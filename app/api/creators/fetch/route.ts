@@ -7,9 +7,14 @@ import { fetchCreatorPosts } from "@/lib/scrape/creator";
 // Apify profile runs can take a minute or two.
 export const maxDuration = 300;
 
-/** POST /api/creators/fetch { platform, handle, name?, avatarUrl?, force? } — pulls the creator's latest posts. */
+/**
+ * POST /api/creators/fetch { platform, handle, name?, avatarUrl?, force?, more? } — pulls the creator's latest
+ * posts. more: true fetches further back than last time ({ status: "exhausted" } once it can't go deeper).
+ */
 export const POST = handler(async (request: NextRequest) => {
-  const body = await readJson<{ platform?: string; handle?: string; name?: string; avatarUrl?: string; force?: boolean }>(request);
+  const body = await readJson<{ platform?: string; handle?: string; name?: string; avatarUrl?: string; force?: boolean; more?: boolean }>(
+    request,
+  );
   const ref = parseCreatorKey(`${body.platform ?? ""}:${body.handle ?? ""}`);
   if (!ref) throw new ApiError(400, "Unknown creator");
 
@@ -20,6 +25,7 @@ export const POST = handler(async (request: NextRequest) => {
     avatarUrl: body.avatarUrl,
     rateKey: user?.id ?? clientIp(request),
     force: Boolean(body.force),
+    more: Boolean(body.more),
   });
   return json(result);
 });

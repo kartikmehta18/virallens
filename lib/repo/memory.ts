@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { scorePost } from "../scoring";
 import { creatorKey } from "../creators";
 import type { BoardSummary, FavoriteCreator, Post, ScrapeJob, WatchedTopic } from "../types";
-import { matchesQuery, rankPosts, summarizeCreators } from "./shared";
+import { parseSearch, postHaystack } from "../search";
+import { matchesQuery, rankPosts, searchTier, summarizeCreators } from "./shared";
 import type { Repository, StoredInvite, StoredUser } from "./types";
 
 interface MemoryBoard {
@@ -65,6 +66,7 @@ export const memoryRepository: Repository = {
   posts: {
     async upsertMany(inputs) {
       const saved: Post[] = [];
+      const createdIds: string[] = [];
       for (const input of inputs) {
         const existingId = state.postIdByUrl.get(input.postUrl);
         const existing = existingId ? state.posts.get(existingId) : undefined;
@@ -77,41 +79,64 @@ export const memoryRepository: Repository = {
         };
         state.posts.set(post.id, post);
         state.postIdByUrl.set(post.postUrl, post.id);
+        if (!existing) createdIds.push(post.id);
         saved.push(post);
       }
-      return saved;
+      return { posts: saved, createdIds };
     },
 
     async search(query) {
+      const parsed = query.topic ? parseSearch(query.topic) : null;
+      const prefer = new Set((query.preferCreators ?? []).map(creatorKey));
       const matches = rankPosts(
-        [...state.posts.values()].filter((post) => matchesQuery(post, query)),
+        [...state.posts.values()].filter((post) => matchesQuery(post, query, parsed)),
         query.sort,
+        parsed ? (post) => searchTier(post, parsed, prefer) : undefined,
       );
       const start = (query.page - 1) * query.limit;
       const items = matches.slice(start, start + query.limit);
-      return { items, page: query.page, limit: query.limit, total: matches.length, hasMore: start + items.length < matches.length };
+      return {
+        items,
+        page: query.page,
+        limit: query.limit,
+        total: matches.length,
+        hasMore: start + items.length < matches.length,
+        ...(prefer.size && {
+          creatorMatches: matches.filter((p) => prefer.has(creatorKey({ platform: p.platform, handle: p.authorHandle }))).length,
+        }),
+      };
     },
 
     async byId(postId) {
       return state.posts.get(postId) ?? null;
     },
 
-    async similarCandidates({ excludeId, topic, platform, tags, limit }) {
-      const tagSet = new Set(tags);
+    async similarCandidates({ excludeId, patterns, minMatch, limit }) {
+      const regexes = patterns.map((p) => new RegExp(p, "iu"));
       return [...state.posts.values()]
-        .filter(
-          (post) =>
-            post.id !== excludeId &&
-            (post.topic.toLowerCase() === topic.toLowerCase() || post.platform === platform || post.tags.some((t) => tagSet.has(t))),
-        )
-        .sort((a, b) => b.trendingScore - a.trendingScore)
-        .slice(0, limit);
+        .filter((post) => post.id !== excludeId)
+        .map((post) => ({ post, matched: regexes.filter((r) => r.test(postHaystack(post))).length }))
+        .filter((c) => c.matched >= minMatch && c.matched > 0)
+        .sort((a, b) => b.matched - a.matched || b.post.trendingScore - a.post.trendingScore)
+        .slice(0, limit)
+        .map((c) => c.post);
+    },
+
+    async oldestPublished(platform, { topic, authorHandle }) {
+      let oldest: string | null = null;
+      for (const post of state.posts.values()) {
+        if (post.platform !== platform) continue;
+        if (topic && post.topic.toLowerCase() !== topic.toLowerCase()) continue;
+        if (authorHandle && post.authorHandle.toLowerCase() !== authorHandle.toLowerCase()) continue;
+        if (!oldest || post.publishedAt < oldest) oldest = post.publishedAt;
+      }
+      return oldest;
     },
 
     async timelineSource(topic, platforms, since, creators) {
-      return [...state.posts.values()].filter((post) =>
-        matchesQuery(post, { topic, platforms, creators, from: since, sort: ["newest"], page: 1, limit: 1 }),
-      );
+      const query = { topic, platforms, creators, from: since, sort: ["newest" as const], page: 1, limit: 1 };
+      const parsed = topic ? parseSearch(topic) : null;
+      return [...state.posts.values()].filter((post) => matchesQuery(post, query, parsed));
     },
 
     async setBreakdown(postId, breakdown) {

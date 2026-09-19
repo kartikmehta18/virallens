@@ -82,10 +82,18 @@ export interface CreatorSummary extends CreatorStats {
 
 export interface SimilarCandidateQuery {
   excludeId: string;
-  topic: string;
-  platform: Platform;
-  tags: string[];
+  /** Regex sources (lib/search.ts dialect) for the source post's key words and tags. */
+  patterns: string[];
+  /** Candidates must match at least this many patterns. */
+  minMatch: number;
   limit: number;
+}
+
+export interface UpsertResult {
+  /** Every post from the input, as stored now. */
+  posts: Post[];
+  /** Ids of the posts that were not stored before this call. */
+  createdIds: string[];
 }
 
 /** Storage abstraction implemented by both the Prisma (MySQL) and in-memory backends. */
@@ -93,10 +101,13 @@ export interface Repository {
   kind: "prisma" | "memory";
 
   posts: {
-    upsertMany(posts: PostInput[]): Promise<Post[]>;
+    upsertMany(posts: PostInput[]): Promise<UpsertResult>;
     search(query: PostQuery): Promise<PostPage>;
     byId(id: string): Promise<Post | null>;
+    /** Posts sharing the most key words/tags with a source post, best first. */
     similarCandidates(query: SimilarCandidateQuery): Promise<Post[]>;
+    /** Oldest stored post for a platform + scraped topic or author — the "load more" cursor for X. */
+    oldestPublished(platform: Platform, match: { topic?: string; authorHandle?: string }): Promise<string | null>;
     timelineSource(
       topic: string | undefined,
       platforms: Platform[] | undefined,

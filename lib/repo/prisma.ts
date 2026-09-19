@@ -11,6 +11,7 @@ import {
   type WatchedTopic as WatchRow,
 } from "../generated/prisma/client";
 import { scorePost } from "../scoring";
+import { parseSearch, sqlPattern, type ParsedSearch } from "../search";
 import type {
   AiBreakdown,
   CreatorRef,
@@ -18,6 +19,7 @@ import type {
   MediaType,
   Platform,
   Post,
+  PostPage,
   PostQuery,
   Role,
   ScrapeJob,
@@ -72,24 +74,56 @@ const SORT_COLUMNS: Record<SortKey, string> = {
 /** Null-safe ORDER BY expression for a sort key (publishedAt is never null and compares as a date). */
 const sortExpr = (key: SortKey) => (key === "newest" ? SORT_COLUMNS[key] : `COALESCE(${SORT_COLUMNS[key]}, 0)`);
 
-/** WHERE clause for the raw multi-sort query; mirrors the Prisma `where` used for single sorts. */
-function rawWhere(query: PostQuery): Prisma.Sql {
+type RawFilters = Pick<PostQuery, "platforms" | "mediaTypes" | "from" | "to" | "creators" | "ids">;
+
+const creatorMatch = (refs: CreatorRef[]) =>
+  Prisma.sql`(${Prisma.join(
+    refs.map((c) => Prisma.sql`(\`platform\` = ${c.platform} AND \`authorHandle\` = ${c.handle})`),
+    " OR ",
+  )})`;
+
+/** WHERE clause for raw queries; mirrors the Prisma `where` used for plain single-sort searches. */
+function rawWhere(query: RawFilters): Prisma.Sql {
   const parts: Prisma.Sql[] = [Prisma.sql`1 = 1`];
   if (query.platforms?.length) parts.push(Prisma.sql`\`platform\` IN (${Prisma.join(query.platforms)})`);
   if (query.mediaTypes?.length) parts.push(Prisma.sql`\`mediaType\` IN (${Prisma.join(query.mediaTypes)})`);
   if (query.from) parts.push(Prisma.sql`\`publishedAt\` >= ${query.from}`);
   if (query.to) parts.push(Prisma.sql`\`publishedAt\` <= ${query.to}`);
-  if (query.creators?.length) {
-    const matches = query.creators.map((c) => Prisma.sql`(\`platform\` = ${c.platform} AND \`authorHandle\` = ${c.handle})`);
-    parts.push(Prisma.sql`(${Prisma.join(matches, " OR ")})`);
-  }
-  if (query.topic) {
-    // INSTR: plain substring match (no LIKE wildcards to escape), case-insensitive under the column collation.
-    const t = query.topic;
-    parts.push(Prisma.sql`(INSTR(\`topic\`, ${t}) > 0 OR INSTR(\`caption\`, ${t}) > 0 OR INSTR(\`authorHandle\`, ${t}) > 0)`);
-  }
+  if (query.creators?.length) parts.push(creatorMatch(query.creators));
+  if (query.ids?.length) parts.push(Prisma.sql`\`id\` IN (${Prisma.join(query.ids)})`);
   return Prisma.join(parts, " AND ");
 }
+
+/** Every text field a keyword search looks at — mirrored by postHaystack() in lib/search.ts. */
+const HAYSTACK = Prisma.raw("CONCAT_WS(' ', `topic`, `caption`, `authorName`, `authorHandle`, `tags`)");
+const regexpHit = (pattern: string) => Prisma.sql`(${HAYSTACK} REGEXP ${sqlPattern(pattern)})`;
+const sumOf = (parts: Prisma.Sql[]) => (parts.length ? Prisma.join(parts, " + ") : Prisma.sql`0`);
+
+/**
+ * SQL twin of scoreText() in lib/search.ts: `matched` = terms found, `phrase_hit` = exact typed wording
+ * (a ranking bonus), plus the exclusion filter. Patterns are bound parameters, never interpolated.
+ */
+function searchColumns(parsed: ParsedSearch) {
+  return {
+    matched: sumOf(parsed.terms.map((t) => regexpHit(t.pattern))),
+    phraseHit: parsed.phrase ? regexpHit(parsed.phrase) : Prisma.sql`0`,
+    notExcluded: parsed.exclude.length
+      ? Prisma.sql`NOT (${Prisma.join(
+          parsed.exclude.map((t) => regexpHit(t.pattern)),
+          " OR ",
+        )})`
+      : Prisma.sql`1 = 1`,
+  };
+}
+
+/** Average PERCENT_RANK() of several sort keys over the rows of the current SELECT (keys are whitelisted). */
+const blendExpr = (sort: SortKey[]) =>
+  Prisma.raw(`(${sort.map((key) => `PERCENT_RANK() OVER (ORDER BY ${sortExpr(key)})`).join(" + ")}) / ${sort.length}`);
+
+/** Columns the ranked-search subqueries carry so sortExpr() keys resolve on them. */
+const SORTABLE_COLUMNS = Prisma.raw(
+  "`trendingScore`, `engagementScore`, `likeCount`, `commentCount`, `shareCount`, `publishedAt`, `memeScore`",
+);
 
 const creatorWhere = (refs: CreatorRef[]): Prisma.PostWhereInput => ({
   OR: refs.map((ref) => ({ platform: ref.platform, authorHandle: ref.handle })),
@@ -204,12 +238,58 @@ export function createPrismaRepository(): Repository {
 
   const ownsBoard = async (userId: string, boardId: string) => (await db.board.count({ where: { id: boardId, userId } })) > 0;
 
+  /** Loads full rows for ids picked by a raw ranking query, keeping that order. */
+  const postsInOrder = async (ids: string[]) => {
+    if (!ids.length) return [];
+    const byId = new Map((await db.post.findMany({ where: { id: { in: ids } } })).map((row) => [row.id, row]));
+    return ids.flatMap((id) => (byId.has(id) ? [toPost(byId.get(id)!)] : []));
+  };
+
+  /**
+   * Keyword search (see lib/search.ts): posts matching at least `minMatch` terms, ranked by preferred
+   * creators first, then relevance tier (terms matched, +1 for the exact wording), then the chosen sort.
+   * Multi-sort blends are percentile ranks within the matching posts only.
+   */
+  const rankedSearch = async (query: PostQuery, parsed: ParsedSearch): Promise<PostPage> => {
+    const skip = (query.page - 1) * query.limit;
+    const cols = searchColumns(parsed);
+    const pref = query.preferCreators?.length ? creatorMatch(query.preferCreators) : Prisma.sql`0`;
+    const candidates = Prisma.sql`
+      SELECT \`id\`, ${SORTABLE_COLUMNS}, ${cols.matched} AS matched, ${cols.phraseHit} AS phrase_hit, ${pref} AS pref
+      FROM \`Post\` WHERE ${rawWhere(query)} AND ${cols.notExcluded}`;
+    const primary = Prisma.raw(sortExpr(query.sort[0]));
+    const blend = query.sort.length > 1 ? blendExpr(query.sort) : primary;
+
+    const [[counts], ranked] = await Promise.all([
+      db.$queryRaw<{ n: number | bigint; c: number | bigint }[]>`
+        SELECT CAST(COUNT(*) AS SIGNED) AS n, CAST(COALESCE(SUM(pref), 0) AS SIGNED) AS c
+        FROM (${candidates}) m WHERE matched >= ${parsed.minMatch}`,
+      db.$queryRaw<{ id: string }[]>`
+        SELECT \`id\` FROM (
+          SELECT \`id\`, pref, matched + phrase_hit AS rel, ${primary} AS primary_value, ${blend} AS blend, \`trendingScore\` AS trending
+          FROM (${candidates}) m WHERE matched >= ${parsed.minMatch}
+        ) ranked
+        ORDER BY pref DESC, rel DESC, blend DESC, primary_value DESC, trending DESC, \`id\` ASC
+        LIMIT ${Prisma.raw(String(Math.trunc(query.limit)))} OFFSET ${Prisma.raw(String(Math.trunc(skip)))}`,
+    ]);
+    const items = await postsInOrder(ranked.map((r) => r.id));
+    const total = Number(counts?.n ?? 0);
+    return {
+      items,
+      page: query.page,
+      limit: query.limit,
+      total,
+      hasMore: skip + items.length < total,
+      ...(query.preferCreators?.length && { creatorMatches: Number(counts?.c ?? 0) }),
+    };
+  };
+
   return {
     kind: "prisma",
 
     posts: {
       async upsertMany(inputs) {
-        if (!inputs.length) return [];
+        if (!inputs.length) return { posts: [], createdIds: [] };
         const rows = inputs.map((input) => {
           const scores = scorePost(input);
           return {
@@ -249,35 +329,24 @@ export function createPrismaRepository(): Repository {
         );
 
         const saved = await db.post.findMany({ where: { postUrl: { in: urls } } });
-        return saved.map(toPost);
+        return { posts: saved.map(toPost), createdIds: saved.filter((row) => !existingUrls.has(row.postUrl)).map((row) => row.id) };
       },
 
       async search(query) {
+        if (query.topic) return rankedSearch(query, parseSearch(query.topic));
+
         const where: Prisma.PostWhereInput = {
           ...(query.platforms?.length && { platform: { in: query.platforms } }),
           ...(query.mediaTypes?.length && { mediaType: { in: query.mediaTypes } }),
           ...((query.from || query.to) && { publishedAt: { ...(query.from && { gte: query.from }), ...(query.to && { lte: query.to }) } }),
-          AND: [
-            ...(query.topic
-              ? [
-                  {
-                    OR: [
-                      { topic: { contains: query.topic } },
-                      { caption: { contains: query.topic } },
-                      { authorHandle: { contains: query.topic } },
-                    ],
-                  },
-                ]
-              : []),
-            ...(query.creators?.length ? [creatorWhere(query.creators)] : []),
-          ],
+          ...(query.ids?.length && { id: { in: query.ids } }),
+          AND: [...(query.creators?.length ? [creatorWhere(query.creators)] : [])],
         };
         const skip = (query.page - 1) * query.limit;
 
         if (query.sort.length > 1) {
           // Blend: average PERCENT_RANK() of every selected metric within the filtered set.
-          const n = query.sort.length;
-          const blend = Prisma.raw(`(${query.sort.map((key) => `PERCENT_RANK() OVER (ORDER BY ${sortExpr(key)})`).join(" + ")}) / ${n}`);
+          const blend = blendExpr(query.sort);
           const primary = Prisma.raw(sortExpr(query.sort[0]));
           const filter = rawWhere(query);
           // Count with the same raw filter so `total` always agrees with the ranked page.
@@ -291,8 +360,7 @@ export function createPrismaRepository(): Repository {
               ORDER BY blend DESC, primary_value DESC, \`id\` ASC
               LIMIT ${Prisma.raw(String(Math.trunc(query.limit)))} OFFSET ${Prisma.raw(String(Math.trunc(skip)))}`,
           ]);
-          const byId = new Map((await db.post.findMany({ where: { id: { in: ranked.map((r) => r.id) } } })).map((row) => [row.id, row]));
-          const items = ranked.flatMap((r) => (byId.has(r.id) ? [toPost(byId.get(r.id)!)] : []));
+          const items = await postsInOrder(ranked.map((r) => r.id));
           const count = Number(total);
           return { items, page: query.page, limit: query.limit, total: count, hasMore: skip + items.length < count };
         }
@@ -317,36 +385,50 @@ export function createPrismaRepository(): Repository {
         return row ? toPost(row) : null;
       },
 
-      async similarCandidates({ excludeId, topic, platform, tags, limit }) {
-        const [related, samePlatform] = await Promise.all([
-          db.post.findMany({
-            where: {
-              id: { not: excludeId },
-              OR: [{ topic }, ...tags.slice(0, 8).map((tag) => ({ tags: { array_contains: tag } }))],
-            },
-            orderBy: { trendingScore: "desc" },
-            take: limit,
-          }),
-          db.post.findMany({
-            where: { id: { not: excludeId }, platform },
-            orderBy: { trendingScore: "desc" },
-            take: Math.ceil(limit / 3),
-          }),
-        ]);
-        const byId = new Map([...related, ...samePlatform].map((row) => [row.id, row]));
-        return [...byId.values()].map(toPost);
+      async similarCandidates({ excludeId, patterns, minMatch, limit }) {
+        if (!patterns.length) return [];
+        const matched = sumOf(patterns.map(regexpHit));
+        const rows = await db.$queryRaw<{ id: string }[]>`
+          SELECT \`id\` FROM (
+            SELECT \`id\`, \`trendingScore\`, ${matched} AS matched FROM \`Post\` WHERE \`id\` <> ${excludeId}
+          ) m
+          WHERE matched >= ${minMatch}
+          ORDER BY matched DESC, \`trendingScore\` DESC
+          LIMIT ${Prisma.raw(String(Math.trunc(limit)))}`;
+        return postsInOrder(rows.map((r) => r.id));
+      },
+
+      async oldestPublished(platform, { topic, authorHandle }) {
+        const row = await db.post.findFirst({
+          where: { platform, ...(topic && { topic }), ...(authorHandle && { authorHandle }) },
+          orderBy: { publishedAt: "asc" },
+          select: { publishedAt: true },
+        });
+        return row ? row.publishedAt.toISOString() : null;
       },
 
       async timelineSource(topic, platforms, since, creators) {
+        if (topic) {
+          const parsed = parseSearch(topic);
+          const cols = searchColumns(parsed);
+          const rows = await db.$queryRaw<{ publishedAt: Date | string; engagementScore: number }[]>`
+            SELECT \`publishedAt\`, \`engagementScore\` FROM (
+              SELECT \`publishedAt\`, \`engagementScore\`, ${cols.matched} AS matched FROM \`Post\`
+              WHERE ${rawWhere({ platforms, creators, from: since })} AND ${cols.notExcluded}
+            ) m
+            WHERE matched >= ${parsed.minMatch}
+            LIMIT 5000`;
+          return rows.map((row) => ({
+            publishedAt: new Date(row.publishedAt).toISOString(),
+            engagementScore: Number(row.engagementScore),
+          }));
+        }
         return db.post
           .findMany({
             where: {
               publishedAt: { gte: since },
               ...(platforms?.length && { platform: { in: platforms } }),
-              AND: [
-                ...(topic ? [{ OR: [{ topic: { contains: topic } }, { caption: { contains: topic } }] }] : []),
-                ...(creators?.length ? [creatorWhere(creators)] : []),
-              ],
+              AND: [...(creators?.length ? [creatorWhere(creators)] : [])],
             },
             select: { publishedAt: true, engagementScore: true },
             take: 5000,

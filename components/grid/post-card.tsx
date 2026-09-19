@@ -10,6 +10,7 @@ import { PlatformLink } from "@/components/icons/platform-link";
 import { Avatar } from "@/components/post/avatar";
 import { Stats } from "@/components/post/stats";
 import { mediaSrc, timeAgo } from "@/lib/client/format";
+import { useQueuedMedia } from "@/lib/client/media-queue";
 import { setOpenScope } from "@/lib/client/transition";
 import type { Post } from "@/lib/types";
 
@@ -129,30 +130,46 @@ function CardMedia({ post, compact }: { post: Post; compact: boolean }) {
     );
   }
 
-  if (!image && post.mediaType === "video" && post.mediaUrls[0]) {
-    return (
-      <video
-        src={mediaSrc(post.mediaUrls[0])}
-        muted
-        playsInline
-        loop
-        preload="metadata"
-        onMouseEnter={(e) => void e.currentTarget.play().catch(() => {})}
-        onMouseLeave={(e) => e.currentTarget.pause()}
-        className="h-full w-full object-cover"
-      />
-    );
-  }
+  if (!image && post.mediaType === "video" && post.mediaUrls[0]) return <CardVideo url={post.mediaUrls[0]} />;
+  return <CardImage url={image} onFailed={() => setFailed(true)} />;
+}
 
+// Grid media waits for a download slot (lib/client/media-queue.ts) so slow CDN files can't starve the API.
+
+function CardVideo({ url }: { url: string }) {
+  const { ref, src, settled } = useQueuedMedia<HTMLVideoElement>(mediaSrc(url));
+  return (
+    <video
+      ref={ref}
+      src={src}
+      muted
+      playsInline
+      loop
+      preload="metadata"
+      onLoadedMetadata={settled}
+      onError={settled}
+      onMouseEnter={(e) => void e.currentTarget.play().catch(() => {})}
+      onMouseLeave={(e) => e.currentTarget.pause()}
+      className="h-full w-full object-cover"
+    />
+  );
+}
+
+function CardImage({ url, onFailed }: { url: string | undefined; onFailed: () => void }) {
+  const { ref, src, settled } = useQueuedMedia<HTMLImageElement>(mediaSrc(url));
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={mediaSrc(image)}
+      ref={ref}
+      src={src}
       alt=""
-      loading="lazy"
       referrerPolicy="no-referrer"
       draggable={false}
-      onError={() => setFailed(true)}
+      onLoad={settled}
+      onError={() => {
+        settled();
+        onFailed();
+      }}
       className="h-full w-full object-cover transition duration-500 group-hover:scale-[1.03]"
     />
   );

@@ -17,7 +17,9 @@ export const GET = handler(async (request: NextRequest) => {
   since.setUTCHours(0, 0, 0, 0);
   since.setUTCDate(since.getUTCDate() - (days - 1));
 
-  const rows = await (await getRepo()).posts.timelineSource(topic, platforms, since, creators);
+  // Same rule as the post search (lib/query.ts): with a keyword, creators only reorder results, so the
+  // chart covers everyone's matching posts.
+  const rows = await (await getRepo()).posts.timelineSource(topic, platforms, since, topic ? undefined : creators);
   const buckets = new Map<string, TimelinePoint>();
   for (let i = 0; i < days; i++) {
     const date = new Date(since.getTime() + i * 86_400_000).toISOString().slice(0, 10);

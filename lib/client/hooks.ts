@@ -1,8 +1,8 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { creatorKey } from "../creators";
-import type { BoardSummary, CreatorProfile, CreatorRef, FavoriteCreator, FavoriteCreatorWithStats, Post } from "../types";
+import type { BoardSummary, CreatorProfile, CreatorRef, FavoriteCreator, FavoriteCreatorWithStats, Post, ScrapeJob } from "../types";
 import { api } from "./api";
 import { useSession } from "./session";
 
@@ -16,13 +16,35 @@ export function usePost(id: string, initialData?: Post) {
   });
 }
 
+export const SIMILAR_PAGE_SIZE = 12;
+
+/** Similar posts, a page at a time (the rail's "Load more" tile fetches the next page). */
 export function useSimilarPosts(id: string) {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: ["similar", id],
-    queryFn: () => api<{ items: Post[] }>(`/api/posts/${id}/similar`).then((r) => r.items),
+    queryFn: ({ pageParam }) =>
+      api<{ items: Post[]; page: number; hasMore: boolean }>(`/api/posts/${id}/similar?page=${pageParam}&limit=${SIMILAR_PAGE_SIZE}`),
+    initialPageParam: 1,
+    getNextPageParam: (last) => (last.hasMore ? last.page + 1 : undefined),
     staleTime: 5 * 60_000,
   });
 }
+
+const isDone = (job?: ScrapeJob) => job?.status === "succeeded" || job?.status === "failed";
+
+/** Polls a scrape job until it finishes (shares the ["scrape", id] cache with the explore banners). */
+export function useScrapeJob(jobId: string | null) {
+  return useQuery({
+    queryKey: ["scrape", jobId],
+    queryFn: () => api<ScrapeJob>(`/api/scrape/status/${jobId}`),
+    enabled: Boolean(jobId),
+    refetchInterval: (query) => (isDone(query.state.data) ? false : 2500),
+  });
+}
+
+/** Ids of the posts a finished scrape job added (from every platform run). */
+export const newPostIdsOf = (job: ScrapeJob | undefined) => job?.runs.flatMap((run) => run.newPostIds ?? []) ?? [];
+export const scrapeJobDone = isDone;
 
 export function useSavedMap() {
   const { user } = useSession();
@@ -94,7 +116,12 @@ export function useCreatorProfile(ref: CreatorRef) {
   });
 }
 
-export type CreatorFetchResult = { status: "fetched" | "cached"; postsFound: number; source: "apify" | "demo" };
+export type CreatorFetchResult = {
+  status: "fetched" | "cached" | "exhausted";
+  postsFound: number;
+  newPostIds: string[];
+  source: "apify" | "demo";
+};
 
 export function useCreatorMutations() {
   const queryClient = useQueryClient();
