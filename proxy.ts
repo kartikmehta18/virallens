@@ -8,7 +8,8 @@ import { resolveDbParts } from "./lib/db/url";
 // admin role).
 
 const PUBLIC_PAGES = new Set(["/", "/login"]);
-const PUBLIC_API_PREFIXES = ["/api/auth/", "/api/health", "/api/cron/"];
+// /api/landing serves the public marketing page; /api/media only proxies allowlisted social CDNs.
+const PUBLIC_API_PREFIXES = ["/api/auth/", "/api/health", "/api/cron/", "/api/landing/", "/api/media"];
 const truthy = (value: string | undefined) => ["on", "true", "1", "yes"].includes((value ?? "").trim().toLowerCase());
 
 function inviteOnly() {
