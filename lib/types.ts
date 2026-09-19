@@ -6,7 +6,7 @@ export type Platform = (typeof PLATFORMS)[number];
 export const MEDIA_TYPES = ["image", "video", "carousel", "text"] as const;
 export type MediaType = (typeof MEDIA_TYPES)[number];
 
-export const SORTS = ["trending", "likes", "comments", "shares", "newest", "engagement"] as const;
+export const SORTS = ["trending", "likes", "comments", "shares", "newest", "engagement", "memes"] as const;
 export type SortKey = (typeof SORTS)[number];
 
 export const DATE_RANGES = ["24h", "7d", "30d", "all", "custom"] as const;
@@ -36,6 +36,8 @@ export interface Post {
   viewCount: number | null;
   engagementScore: number;
   trendingScore: number;
+  /** 0–100 "how meme-like is this?" heuristic (see lib/meme.ts); powers the Memes sort. */
+  memeScore: number;
   topic: string;
   tags: string[];
   aiBreakdown: AiBreakdown | null;
@@ -44,7 +46,7 @@ export interface Post {
 }
 
 /** A normalized post before it has been stored (no id / scores yet). */
-export type PostInput = Omit<Post, "id" | "engagementScore" | "trendingScore" | "aiBreakdown" | "fetchedAt">;
+export type PostInput = Omit<Post, "id" | "engagementScore" | "trendingScore" | "memeScore" | "aiBreakdown" | "fetchedAt">;
 
 export interface PostQuery {
   topic?: string;
@@ -132,6 +134,8 @@ export interface ScrapeRunInfo {
   source: "apify" | "demo";
   status: "pending" | "running" | "succeeded" | "failed";
   runId?: string;
+  /** Results requested from the actor; set on "load more" (deeper) scrapes, else APIFY_MAX_ITEMS. */
+  limit?: number;
   items?: number;
   error?: string;
 }

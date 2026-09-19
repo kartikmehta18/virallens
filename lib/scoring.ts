@@ -1,3 +1,6 @@
+import { memeScore } from "./meme";
+import type { MediaType } from "./types";
+
 interface Counts {
   likeCount: number;
   commentCount: number;
@@ -16,9 +19,14 @@ export function trendingScore(engagement: number, publishedAt: Date | string, no
   return engagement / Math.pow(hours + 2, 1.5);
 }
 
-export function scorePost<T extends Counts & { publishedAt: string }>(post: T) {
+/** Every derived score for a post — kept together so both repository backends stay in sync. */
+export function scorePost<T extends Counts & { publishedAt: string; caption: string; tags: string[]; mediaType: MediaType }>(post: T) {
   const engagement = engagementScore(post);
-  return { engagementScore: round(engagement), trendingScore: round(trendingScore(engagement, post.publishedAt)) };
+  return {
+    engagementScore: round(engagement),
+    trendingScore: round(trendingScore(engagement, post.publishedAt)),
+    memeScore: memeScore(post),
+  };
 }
 
 const round = (n: number) => Math.round(n * 1000) / 1000;

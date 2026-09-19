@@ -16,6 +16,7 @@
     "db:status": "prisma migrate status",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
+    "db:backfill-memes": "tsx --conditions=react-server --tsconfig tsconfig.json scripts/backfill-meme-scores.ts",
     "admin": "tsx --conditions=react-server --tsconfig tsconfig.json scripts/admin.ts"
   },
   "dependencies": {

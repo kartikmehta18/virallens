@@ -17,6 +17,7 @@ const COLUMNS: (keyof Post)[] = [
   "viewCount",
   "engagementScore",
   "trendingScore",
+  "memeScore",
   "topic",
   "tags",
   "publishedAt",

@@ -19,6 +19,7 @@ export const SORT_FIELDS: Record<SortKey, keyof Post> = {
   comments: "commentCount",
   shares: "shareCount",
   newest: "publishedAt",
+  memes: "memeScore",
 };
 
 /** Ranks posts by the average percentile rank across several sort keys (single key: plain descending sort). */
@@ -27,7 +28,9 @@ export function rankPosts(posts: Post[], sorts: SortKey[]): Post[] {
     const v = post[SORT_FIELDS[key]];
     return typeof v === "string" ? new Date(v).getTime() : ((v as number | null) ?? 0);
   };
-  const byKeyDesc = (key: SortKey) => (a: Post, b: Post) => value(b, key) - value(a, key) || a.id.localeCompare(b.id);
+  // Ties fall back to trending — most posts share a memeScore of 0, and plenty share 0 likes/shares.
+  const byKeyDesc = (key: SortKey) => (a: Post, b: Post) =>
+    value(b, key) - value(a, key) || b.trendingScore - a.trendingScore || a.id.localeCompare(b.id);
   if (sorts.length <= 1) return [...posts].sort(byKeyDesc(sorts[0] ?? "trending"));
 
   // Percentile rank in ascending order, ties share the lower rank — same as SQL PERCENT_RANK().

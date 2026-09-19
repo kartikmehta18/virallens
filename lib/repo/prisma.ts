@@ -49,6 +49,7 @@ function toPost(row: PostRow): Post {
     viewCount: row.viewCount,
     engagementScore: row.engagementScore,
     trendingScore: row.trendingScore,
+    memeScore: row.memeScore,
     topic: row.topic,
     tags: asArray<string>(row.tags),
     aiBreakdown: (row.aiBreakdown as AiBreakdown | null) ?? null,
@@ -65,6 +66,7 @@ const SORT_COLUMNS: Record<SortKey, string> = {
   comments: "`commentCount`",
   shares: "`shareCount`",
   newest: "`publishedAt`",
+  memes: "`memeScore`",
 };
 
 /** Null-safe ORDER BY expression for a sort key (publishedAt is never null and compares as a date). */
@@ -300,7 +302,8 @@ export function createPrismaRepository(): Repository {
           db.post.count({ where }),
           db.post.findMany({
             where,
-            orderBy: [{ [field]: "desc" }, { id: "asc" }],
+            // Ties fall back to trending (see rankPosts) — most posts share a memeScore of 0.
+            orderBy: [{ [field]: "desc" }, ...(field === "trendingScore" ? [] : [{ trendingScore: "desc" as const }]), { id: "asc" }],
             skip: (query.page - 1) * query.limit,
             take: query.limit,
           }),
@@ -358,10 +361,28 @@ export function createPrismaRepository(): Repository {
       async rescoreSince(since) {
         const rows = await db.post.findMany({
           where: { publishedAt: { gte: since } },
-          select: { id: true, likeCount: true, commentCount: true, shareCount: true, viewCount: true, publishedAt: true },
+          select: {
+            id: true,
+            likeCount: true,
+            commentCount: true,
+            shareCount: true,
+            viewCount: true,
+            publishedAt: true,
+            caption: true,
+            tags: true,
+            mediaType: true,
+          },
         });
         await inBatches(rows, 5, (row) =>
-          db.post.update({ where: { id: row.id }, data: scorePost({ ...row, publishedAt: row.publishedAt.toISOString() }) }),
+          db.post.update({
+            where: { id: row.id },
+            data: scorePost({
+              ...row,
+              publishedAt: row.publishedAt.toISOString(),
+              tags: asArray<string>(row.tags),
+              mediaType: row.mediaType as MediaType,
+            }),
+          }),
         );
         return rows.length;
       },

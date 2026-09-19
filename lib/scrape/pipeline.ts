@@ -20,12 +20,25 @@ const SCRAPERS: Record<Platform, (topic: string, limit: number, onStart?: (runId
 
 const freshKey = (platform: Platform, topic: string) => `scrape:fresh:${platform}:${topic.toLowerCase()}`;
 const inflightKey = (platforms: Platform[], topic: string) => `scrape:inflight:${[...platforms].sort().join(",")}:${topic.toLowerCase()}`;
+/** How deep (results per platform) "load more" has already scraped a topic. */
+const depthKey = (platform: Platform, topic: string) => `scrape:depth:${platform}:${topic.toLowerCase()}`;
+const DEPTH_TTL = 7 * 24 * 60 * 60;
 
-export type ScrapeRequestResult = { status: "cached"; platforms: Platform[] } | { status: "started" | "inflight"; job: ScrapeJob };
+/** "Load more" doubles the depth each time, up to 4× APIFY_MAX_ITEMS (and never past the 500 hard cap). */
+const maxDepth = () => Math.min(env.apifyMaxItems * 4, 500);
+
+export type ScrapeRequestResult =
+  | { status: "cached"; platforms: Platform[] }
+  | { status: "exhausted"; platforms: Platform[]; limit: number }
+  | { status: "started" | "inflight"; job: ScrapeJob };
 
 /**
  * Decides whether a topic needs a fresh scrape. Returns "cached" if every platform was scraped
  * within SCRAPE_CACHE_TTL, otherwise creates a job (the caller runs it in the background).
+ *
+ * `more` is "load more": actors return their top N results, so re-running at the same N finds nothing
+ * new. Instead it re-scrapes deeper (double the previous depth) — the new posts are the ones past the
+ * old cut-off. Returns "exhausted" once every platform is at the maximum depth.
  */
 export async function requestScrape(options: {
   topic: string;
@@ -33,15 +46,25 @@ export async function requestScrape(options: {
   userId: string | null;
   rateKey: string;
   force?: boolean;
+  more?: boolean;
 }): Promise<ScrapeRequestResult> {
   const topic = normalizeTopic(options.topic);
   if (topic.length < 2) throw new ApiError(400, "Topic must be at least 2 characters");
   const cache = await getCache();
   const repo = await getRepo();
 
+  const limits = new Map<Platform, number>();
+  if (options.more) {
+    for (const platform of options.platforms) {
+      const depth = Number(await cache.get(depthKey(platform, topic))) || env.apifyMaxItems;
+      if (depth < maxDepth()) limits.set(platform, Math.min(depth * 2, maxDepth()));
+    }
+    if (!limits.size) return { status: "exhausted", platforms: options.platforms, limit: maxDepth() };
+  }
+
   const stale: Platform[] = [];
   for (const platform of options.platforms) {
-    if (options.force || !(await cache.get(freshKey(platform, topic)))) stale.push(platform);
+    if (options.more ? limits.has(platform) : options.force || !(await cache.get(freshKey(platform, topic)))) stale.push(platform);
   }
   if (!stale.length) return { status: "cached", platforms: options.platforms };
 
@@ -59,17 +82,19 @@ export async function requestScrape(options: {
     topic,
     platforms: stale,
     userId: options.userId,
-    runs: stale.map((platform) => ({ platform, source, status: "pending" })),
+    runs: stale.map((platform) => ({ platform, source, status: "pending", ...(limits.has(platform) && { limit: limits.get(platform) }) })),
   });
   await cache.set(inflightKey(stale, topic), job.id, 15 * 60);
+  // Claim the new depth now, so a second click while this job runs goes deeper still instead of repeating it.
+  for (const [platform, limit] of limits) await cache.set(depthKey(platform, topic), String(limit), DEPTH_TTL);
   return { status: "started", job };
 }
 
-async function fetchPlatform(platform: Platform, topic: string, onStart: (runId: string) => void): Promise<PostInput[]> {
-  const limit = env.apifyMaxItems;
+async function fetchPlatform(platform: Platform, topic: string, limit: number, onStart: (runId: string) => void): Promise<PostInput[]> {
   if (!env.apifyToken) {
     await new Promise((resolve) => setTimeout(resolve, 1200 + Math.random() * 1500));
-    return generateDemoPosts(topic, platform, Math.min(limit, 18));
+    // Demo posts are seeded, so a deeper "load more" returns the same first posts plus new ones.
+    return generateDemoPosts(topic, platform, Math.round(18 * Math.min(limit / env.apifyMaxItems, 4)));
   }
   const raw = await SCRAPERS[platform](topic, limit, onStart);
   return raw.map((item) => NORMALIZERS[platform](item, topic)).filter((post): post is PostInput => post !== null);
@@ -93,7 +118,7 @@ export async function executeScrapeJob(jobId: string): Promise<Post[]> {
       run.status = "running";
       await persistRuns();
       try {
-        const inputs = await fetchPlatform(platform, job.topic, (runId) => {
+        const inputs = await fetchPlatform(platform, job.topic, run.limit ?? env.apifyMaxItems, (runId) => {
           run.runId = runId;
           void persistRuns();
         });

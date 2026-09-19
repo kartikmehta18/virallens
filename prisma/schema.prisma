@@ -28,6 +28,8 @@ model Post {
   viewCount       Int?
   engagementScore Float    @default(0)
   trendingScore   Float    @default(0)
+  /// 0–100 meme-likeness heuristic (lib/meme.ts), for the "Memes" sort.
+  memeScore       Float    @default(0)
   topic           String   @db.VarChar(255)
   tags            Json
   aiBreakdown     Json?
@@ -40,6 +42,7 @@ model Post {
   @@index([platform])
   @@index([trendingScore])
   @@index([engagementScore])
+  @@index([memeScore])
   @@index([publishedAt])
   @@index([platform, authorHandle])
 }
