@@ -168,6 +168,66 @@ export function scoreText(text: string, parsed: ParsedSearch): SearchScore {
   return { matched, relevance, excluded, ok: !excluded && matched >= parsed.minMatch };
 }
 
+/** Max related searches folded into a topic search (each adds a REGEXP pass per post in SQL). */
+export const MAX_RELATED = 5;
+
+/** Parses the related searches for a topic, dropping empties and ones identical to the topic itself. */
+export function parseRelated(related: string[] | undefined, parsed: ParsedSearch): ParsedSearch[] {
+  const own = parsed.terms.map((t) => t.pattern).join("|");
+  const seen = new Set([own]);
+  const out: ParsedSearch[] = [];
+  for (const text of related ?? []) {
+    const r = parseSearch(text);
+    const key = r.terms.map((t) => t.pattern).join("|");
+    if (!r.terms.length || seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+    if (out.length >= MAX_RELATED) break;
+  }
+  return out;
+}
+
+/**
+ * A topic search with its related searches (JS twin of the SQL in lib/repo/prisma.ts). A post passes on the
+ * topic itself or on any related search, and never when it hits one of the topic's -exclusions. The topic's
+ * own matches come first; related-only posts follow, grouped in the order of the related searches (relevance
+ * -1 for the first related search, -2 for the second, …), each group by the chosen sort.
+ */
+export function scoreTopic(text: string, parsed: ParsedSearch, related: ParsedSearch[]): { ok: boolean; relevance: number } {
+  const own = scoreText(text, parsed);
+  if (own.excluded) return { ok: false, relevance: 0 };
+  if (own.ok) return { ok: true, relevance: own.relevance };
+  const index = related.findIndex((r) => scoreText(text, r).ok);
+  return index >= 0 ? { ok: true, relevance: -(index + 1) } : { ok: false, relevance: 0 };
+}
+
+type Searchable = Parameters<typeof postHaystack>[0];
+
+/**
+ * Splits a ranked topic feed into the groups scoreTopic() ranked it by: posts matching the topic (or its
+ * spelling fix) first, then — per related search, in order — the posts only that search found. Ranked order
+ * is kept inside each group; a post matching none (a stale related list) stays with the topic's posts.
+ */
+export function groupByRelated<T extends Searchable>(
+  posts: T[],
+  topic: string,
+  insight: { corrected: string | null; related: string[] },
+): { direct: T[]; related: { query: string; posts: T[] }[] } {
+  const own = [parseSearch(topic), ...(insight.corrected ? [parseSearch(insight.corrected)] : [])];
+  const related = insight.related.map((query) => ({ query, parsed: parseSearch(query), posts: [] as T[] }));
+  const direct: T[] = [];
+  for (const post of posts) {
+    const text = postHaystack(post);
+    if (own.some((parsed) => scoreText(text, parsed).ok)) {
+      direct.push(post);
+      continue;
+    }
+    const group = related.find((r) => r.parsed.terms.length > 0 && scoreText(text, r.parsed).ok);
+    (group ? group.posts : direct).push(post);
+  }
+  return { direct, related: related.filter((r) => r.posts.length).map(({ query, posts: list }) => ({ query, posts: list })) };
+}
+
 /** The text a post is searched in — the same fields, in the same shape, as the SQL CONCAT_WS haystack. */
 export function postHaystack(post: { topic: string; caption: string; authorName: string; authorHandle: string; tags: string[] }) {
   return [post.topic, post.caption, post.authorName, post.authorHandle, JSON.stringify(post.tags)].join(" ");

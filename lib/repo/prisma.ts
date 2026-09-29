@@ -10,8 +10,8 @@ import {
   type ScrapeJob as ScrapeJobRow,
   type WatchedTopic as WatchRow,
 } from "../generated/prisma/client";
-import { scorePost } from "../scoring";
-import { parseSearch, sqlPattern, type ParsedSearch } from "../search";
+import { TRENDING_GRAVITY, TRENDING_REFRESH_MS, platformFactors, scorePost, setPlatformFactors } from "../scoring";
+import { parseRelated, parseSearch, sqlPattern, type ParsedSearch } from "../search";
 import type {
   AiBreakdown,
   CreatorRef,
@@ -92,6 +92,32 @@ function rawWhere(query: RawFilters): Prisma.Sql {
   if (query.creators?.length) parts.push(creatorMatch(query.creators));
   if (query.ids?.length) parts.push(Prisma.sql`\`id\` IN (${Prisma.join(query.ids)})`);
   return Prisma.join(parts, " AND ");
+}
+
+/**
+ * SQL twin of scoreTopic() in lib/search.ts: a topic search plus its related searches. `inner` goes in the
+ * candidate SELECT (each REGEXP runs once per row); `ok` and `rel` are used on top of it — `ok` passes the
+ * topic or any related search, `rel` is the ranking tier: the topic's own matches first, then related-only
+ * rows grouped by the first related search they match (related_tier 1 → rel -1, 2 → -2, …).
+ */
+function topicColumns(parsed: ParsedSearch, related: ParsedSearch[]) {
+  const cols = searchColumns(parsed);
+  const relatedTier = related.length
+    ? Prisma.sql`CASE ${Prisma.join(
+        related.map((r, i) => {
+          const rc = searchColumns(r);
+          return Prisma.sql`WHEN ((${rc.matched}) >= ${r.minMatch} AND ${rc.notExcluded}) THEN ${i + 1}`;
+        }),
+        " ",
+      )} ELSE 0 END`
+    : Prisma.sql`0`;
+  const own = Prisma.sql`matched >= ${parsed.minMatch}`;
+  return {
+    notExcluded: cols.notExcluded,
+    inner: Prisma.sql`${cols.matched} AS matched, ${cols.phraseHit} AS phrase_hit, (${relatedTier}) AS related_tier`,
+    ok: Prisma.sql`(${own} OR related_tier > 0)`,
+    rel: Prisma.sql`CASE WHEN ${own} THEN matched + phrase_hit ELSE -related_tier END`,
+  };
 }
 
 /** Every text field a keyword search looks at — mirrored by postHaystack() in lib/search.ts. */
@@ -233,8 +259,49 @@ const toBoardSummary = (board: BoardWithCovers) => ({
   covers: board.posts.map((saved) => saved.post.thumbnailUrl).filter((url): url is string => Boolean(url)),
 });
 
+// Trending scores decay with time, so stored values are refreshed at most every TRENDING_REFRESH_MS (shared by
+// every request in this server instance; concurrent searches wait on the same refresh).
+const TRENDING_WINDOW_MS = 45 * 24 * 3_600_000;
+let trendingRefreshedAt = 0;
+let trendingRefresh: Promise<void> | null = null;
+
 export function createPrismaRepository(): Repository {
   const db = getPrisma();
+
+  /** Recomputes the per-platform baselines, then every recent post's trendingScore in one UPDATE. */
+  const refreshTrending = async () => {
+    const now = new Date();
+    const since = new Date(now.getTime() - TRENDING_WINDOW_MS);
+    const baselineSince = new Date(now.getTime() - 30 * 24 * 3_600_000);
+    const stats = await db.$queryRaw<{ platform: Platform; typical: number; n: number | bigint }[]>`
+      SELECT \`platform\`, EXP(AVG(LN(\`engagementScore\` + 1))) - 1 AS typical, COUNT(*) AS n
+      FROM \`Post\` WHERE \`publishedAt\` >= ${baselineSince} GROUP BY \`platform\``;
+    const factors = platformFactors(
+      Object.fromEntries(stats.map((r) => [r.platform, { typical: Number(r.typical), n: Number(r.n) }])),
+    );
+    setPlatformFactors(factors);
+    const factorCase = Prisma.join(
+      Object.entries(factors).map(([platform, factor]) => Prisma.sql`WHEN ${platform} THEN ${factor}`),
+      " ",
+    );
+    await db.$executeRaw`
+      UPDATE \`Post\` SET \`trendingScore\` = ROUND(
+        \`engagementScore\` * (CASE \`platform\` ${factorCase} ELSE 1 END)
+          / POW(GREATEST(0, TIMESTAMPDIFF(SECOND, \`publishedAt\`, ${now})) / 3600 + 2, ${TRENDING_GRAVITY}),
+        3)
+      WHERE \`publishedAt\` >= ${since}`;
+    trendingRefreshedAt = now.getTime();
+  };
+
+  const ensureFreshTrending = async () => {
+    if (Date.now() - trendingRefreshedAt < TRENDING_REFRESH_MS) return;
+    trendingRefresh ??= refreshTrending()
+      .catch((error) => console.error("[trending] refresh failed", error))
+      .finally(() => {
+        trendingRefresh = null;
+      });
+    await trendingRefresh;
+  };
 
   const ownsBoard = async (userId: string, boardId: string) => (await db.board.count({ where: { id: boardId, userId } })) > 0;
 
@@ -252,35 +319,33 @@ export function createPrismaRepository(): Repository {
    */
   const rankedSearch = async (query: PostQuery, parsed: ParsedSearch): Promise<PostPage> => {
     const skip = (query.page - 1) * query.limit;
-    const cols = searchColumns(parsed);
+    const cols = topicColumns(parsed, parseRelated(query.related, parsed));
     const pref = query.preferCreators?.length ? creatorMatch(query.preferCreators) : Prisma.sql`0`;
     const candidates = Prisma.sql`
-      SELECT \`id\`, ${SORTABLE_COLUMNS}, ${cols.matched} AS matched, ${cols.phraseHit} AS phrase_hit, ${pref} AS pref
+      SELECT \`id\`, ${SORTABLE_COLUMNS}, ${cols.inner}, ${pref} AS pref
       FROM \`Post\` WHERE ${rawWhere(query)} AND ${cols.notExcluded}`;
     const primary = Prisma.raw(sortExpr(query.sort[0]));
     const blend = query.sort.length > 1 ? blendExpr(query.sort) : primary;
 
-    const [[counts], ranked] = await Promise.all([
-      db.$queryRaw<{ n: number | bigint; c: number | bigint }[]>`
-        SELECT CAST(COUNT(*) AS SIGNED) AS n, CAST(COALESCE(SUM(pref), 0) AS SIGNED) AS c
-        FROM (${candidates}) m WHERE matched >= ${parsed.minMatch}`,
-      db.$queryRaw<{ id: string }[]>`
-        SELECT \`id\` FROM (
-          SELECT \`id\`, pref, matched + phrase_hit AS rel, ${primary} AS primary_value, ${blend} AS blend, \`trendingScore\` AS trending
-          FROM (${candidates}) m WHERE matched >= ${parsed.minMatch}
-        ) ranked
-        ORDER BY pref DESC, rel DESC, blend DESC, primary_value DESC, trending DESC, \`id\` ASC
-        LIMIT ${Prisma.raw(String(Math.trunc(query.limit)))} OFFSET ${Prisma.raw(String(Math.trunc(skip)))}`,
-    ]);
+    // One pass: the REGEXP matching is the expensive part, so the totals come from window functions over the
+    // same matches instead of a second COUNT query. A page past the end returns no rows (and total 0).
+    const ranked = await db.$queryRaw<{ id: string; n: number | bigint; c: number | bigint }[]>`
+      SELECT \`id\`, n, c FROM (
+        SELECT \`id\`, pref, ${cols.rel} AS rel, ${primary} AS primary_value, ${blend} AS blend, \`trendingScore\` AS trending,
+          COUNT(*) OVER () AS n, SUM(pref) OVER () AS c
+        FROM (${candidates}) m WHERE ${cols.ok}
+      ) ranked
+      ORDER BY pref DESC, rel DESC, blend DESC, primary_value DESC, trending DESC, \`id\` ASC
+      LIMIT ${Prisma.raw(String(Math.trunc(query.limit)))} OFFSET ${Prisma.raw(String(Math.trunc(skip)))}`;
     const items = await postsInOrder(ranked.map((r) => r.id));
-    const total = Number(counts?.n ?? 0);
+    const total = Number(ranked[0]?.n ?? 0);
     return {
       items,
       page: query.page,
       limit: query.limit,
       total,
       hasMore: skip + items.length < total,
-      ...(query.preferCreators?.length && { creatorMatches: Number(counts?.c ?? 0) }),
+      ...(query.preferCreators?.length && { creatorMatches: Number(ranked[0]?.c ?? 0) }),
     };
   };
 
@@ -333,6 +398,7 @@ export function createPrismaRepository(): Repository {
       },
 
       async search(query) {
+        await ensureFreshTrending();
         if (query.topic) return rankedSearch(query, parseSearch(query.topic));
 
         const where: Prisma.PostWhereInput = {
@@ -407,17 +473,17 @@ export function createPrismaRepository(): Repository {
         return row ? row.publishedAt.toISOString() : null;
       },
 
-      async timelineSource(topic, platforms, since, creators) {
+      async timelineSource(topic, platforms, since, { creators, mediaTypes, to, related } = {}) {
         if (topic) {
           const parsed = parseSearch(topic);
-          const cols = searchColumns(parsed);
+          const cols = topicColumns(parsed, parseRelated(related, parsed));
           const rows = await db.$queryRaw<{ publishedAt: Date | string; engagementScore: number }[]>`
             SELECT \`publishedAt\`, \`engagementScore\` FROM (
-              SELECT \`publishedAt\`, \`engagementScore\`, ${cols.matched} AS matched FROM \`Post\`
-              WHERE ${rawWhere({ platforms, creators, from: since })} AND ${cols.notExcluded}
+              SELECT \`publishedAt\`, \`engagementScore\`, ${cols.inner} FROM \`Post\`
+              WHERE ${rawWhere({ platforms, creators, mediaTypes, from: since, to })} AND ${cols.notExcluded}
             ) m
-            WHERE matched >= ${parsed.minMatch}
-            LIMIT 5000`;
+            WHERE ${cols.ok}
+            LIMIT 20000`;
           return rows.map((row) => ({
             publishedAt: new Date(row.publishedAt).toISOString(),
             engagementScore: Number(row.engagementScore),
@@ -426,14 +492,25 @@ export function createPrismaRepository(): Repository {
         return db.post
           .findMany({
             where: {
-              publishedAt: { gte: since },
+              publishedAt: { gte: since, ...(to && { lte: to }) },
               ...(platforms?.length && { platform: { in: platforms } }),
+              ...(mediaTypes?.length && { mediaType: { in: mediaTypes } }),
               AND: [...(creators?.length ? [creatorWhere(creators)] : [])],
             },
             select: { publishedAt: true, engagementScore: true },
-            take: 5000,
+            take: 20000,
           })
           .then((rows) => rows.map((row) => ({ publishedAt: row.publishedAt.toISOString(), engagementScore: row.engagementScore })));
+      },
+
+      async engagementSample(platform, limit) {
+        const rows = await db.post.findMany({
+          where: { platform },
+          select: { engagementScore: true },
+          orderBy: { publishedAt: "desc" },
+          take: limit,
+        });
+        return rows.map((row) => row.engagementScore);
       },
 
       async setBreakdown(id, breakdown) {
@@ -441,10 +518,12 @@ export function createPrismaRepository(): Repository {
       },
 
       async rescoreSince(since) {
+        await refreshTrending(); // fresh platform baselines for scorePost below
         const rows = await db.post.findMany({
           where: { publishedAt: { gte: since } },
           select: {
             id: true,
+            platform: true,
             likeCount: true,
             commentCount: true,
             shareCount: true,
@@ -460,6 +539,7 @@ export function createPrismaRepository(): Repository {
             where: { id: row.id },
             data: scorePost({
               ...row,
+              platform: row.platform as Platform,
               publishedAt: row.publishedAt.toISOString(),
               tags: asArray<string>(row.tags),
               mediaType: row.mediaType as MediaType,

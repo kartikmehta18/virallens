@@ -14,9 +14,9 @@ import { PillMenu } from "./pill-menu";
 import { WatchButton } from "./watch-button";
 
 interface Props {
+  /** The applied filters (what the grid shows). Edits here stay local until the send button applies them. */
   filters: ExploreFilters;
-  onChange: (patch: Partial<ExploreFilters>) => void;
-  onSearch: (topic: string) => void;
+  onSubmit: (next: ExploreFilters) => void;
   onRefresh: () => void;
   scraping: boolean;
   docked: boolean;
@@ -26,10 +26,19 @@ const toggle = <T,>(list: T[], value: T) => (list.includes(value) ? list.filter(
 
 const SUGGESTIONS = ["AI tools", "personal branding", "fitness", "startups", "productivity"];
 
-/** Chat-style glass composer holding the search query and every filter. Docks to the bottom of the screen or sits inline. */
-export function SearchComposer({ filters, onChange, onSearch, onRefresh, scraping, docked }: Props) {
-  const [draft, setDraft] = useState(filters.topic);
-  const [syncedTopic, setSyncedTopic] = useState(filters.topic);
+const normalizeTopic = (topic: string) => topic.trim().replace(/\s+/g, " ");
+const filtersKey = (f: ExploreFilters) =>
+  filtersToParams({ ...f, platforms: [...f.platforms].sort(), mediaTypes: [...f.mediaTypes].sort(), creators: [...f.creators].sort() }).toString();
+
+/**
+ * Chat-style glass composer holding the search query and every filter. Docks to the bottom of the screen or
+ * sits inline. Picking filters only edits a local draft — nothing is requested until the send button (or
+ * Enter) applies the whole set at once.
+ */
+export function SearchComposer({ filters: applied, onSubmit, onRefresh, scraping, docked }: Props) {
+  const [draft, setDraft] = useState(applied.topic);
+  const [filters, setPending] = useState(applied);
+  const [synced, setSynced] = useState(applied);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const { user } = useSession();
   const { data: favorites = [] } = useFavoriteCreators();
@@ -38,15 +47,20 @@ export function SearchComposer({ filters, onChange, onSearch, onRefresh, scrapin
   const allFavoritesApplied = allFavoriteKeys.length > 0 && allFavoriteKeys.every((k) => filters.creators.includes(k));
   const direction = docked ? "up" : "down";
 
-  // Keep the box in sync when the topic changes elsewhere (hashtag click, back button).
-  if (filters.topic !== syncedTopic) {
-    setSyncedTopic(filters.topic);
-    setDraft(filters.topic);
+  // Reset the draft when the applied filters change elsewhere (hashtag click, back button, a submit).
+  if (applied !== synced) {
+    setSynced(applied);
+    setPending(applied);
+    setDraft(applied.topic);
   }
+
+  const onChange = (patch: Partial<ExploreFilters>) => setPending((current) => ({ ...current, ...patch }));
+  const next = { ...filters, topic: normalizeTopic(draft) };
+  const dirty = filtersKey(next) !== filtersKey(applied);
 
   const submit = (e?: FormEvent) => {
     e?.preventDefault();
-    onSearch(draft.trim().replace(/\s+/g, " "));
+    onSubmit(next);
     textarea.current?.blur();
   };
 
@@ -64,8 +78,9 @@ export function SearchComposer({ filters, onChange, onSearch, onRefresh, scrapin
         ? PLATFORM_LABELS[filters.platforms[0]]
         : `${filters.platforms.length} platforms`;
   const formatLabel = filters.mediaTypes.length === 0 ? "Any format" : filters.mediaTypes.map((m) => MEDIA_LABELS[m]).join(", ");
+  // Unapplied changes can always be sent; otherwise re-sending re-fetches the topic / creators.
   // With creators selected an empty search is fine: it fetches their new posts.
-  const canSend = draft.trim().length >= 2 || (draft.trim() === "" && (filters.topic !== "" || filters.creators.length > 0));
+  const canSend = dirty || draft.trim().length >= 2 || (draft.trim() === "" && filters.creators.length > 0);
 
   const panel = (
     <form
@@ -171,12 +186,12 @@ export function SearchComposer({ filters, onChange, onSearch, onRefresh, scrapin
               </span>
             );
           })}
-          {filters.topic && (
+          {applied.topic && draft.trim() && (
             <span className="border-accent/30 bg-accent/12 text-foreground flex h-7 shrink-0 items-center gap-1 rounded-full border pr-1 pl-2.5 text-xs font-medium">
-              {filters.topic}
+              {applied.topic}
               <button
                 type="button"
-                onClick={() => onSearch("")}
+                onClick={() => setDraft("")}
                 className="hover:bg-foreground/10 grid size-5 place-items-center rounded-full"
                 aria-label="Clear topic"
               >
@@ -192,7 +207,8 @@ export function SearchComposer({ filters, onChange, onSearch, onRefresh, scrapin
               <PlatformIcon platform={p} className="size-3" /> {PLATFORM_LABELS[p]}
             </span>
           ))}
-          {!filters.topic &&
+          {!applied.topic &&
+            !draft.trim() &&
             filters.platforms.length === 0 &&
             filters.creators.length === 0 &&
             SUGGESTIONS.map((s) => (
@@ -201,7 +217,7 @@ export function SearchComposer({ filters, onChange, onSearch, onRefresh, scrapin
                 key={s}
                 onClick={() => {
                   setDraft(s);
-                  onSearch(s);
+                  onSubmit({ ...filters, topic: s });
                 }}
                 className="text-muted hover:bg-foreground/[0.06] hover:text-foreground h-7 shrink-0 rounded-full px-2.5 text-xs transition"
               >
@@ -309,18 +325,22 @@ export function SearchComposer({ filters, onChange, onSearch, onRefresh, scrapin
             selected={filters.mediaTypes}
             onSelect={(m) => onChange({ mediaTypes: toggle(filters.mediaTypes, m) })}
           />
-          <span className="text-muted hidden text-[11px] sm:inline">· {platformLabel}</span>
+          {dirty ? (
+            <span className="text-accent text-[11px] font-medium">· Press ↑ to apply</span>
+          ) : (
+            <span className="text-muted hidden text-[11px] sm:inline">· {platformLabel}</span>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
-          {filters.topic && <WatchButton topic={filters.topic} platforms={filters.platforms} />}
-          {(filters.topic || filters.creators.length > 0) && (
+          {applied.topic && <WatchButton topic={applied.topic} platforms={applied.platforms} />}
+          {(applied.topic || applied.creators.length > 0) && (
             <IconButton
               onClick={onRefresh}
               disabled={scraping}
               label={
-                filters.creators.length
-                  ? filters.topic
+                applied.creators.length
+                  ? applied.topic
                     ? "Fetch fresh posts for the topic and your creators"
                     : "Fetch new posts from the selected creators"
                   : "Fetch fresh posts"
@@ -330,7 +350,7 @@ export function SearchComposer({ filters, onChange, onSearch, onRefresh, scrapin
             </IconButton>
           )}
           <a
-            href={`/api/posts/export?${filtersToParams(filters)}`}
+            href={`/api/posts/export?${filtersToParams(applied)}`}
             title="Export results as CSV"
             aria-label="Export CSV"
             className={iconButtonClass}
@@ -342,15 +362,17 @@ export function SearchComposer({ filters, onChange, onSearch, onRefresh, scrapin
           </Link>
           <button
             type="submit"
-            disabled={!canSend || scraping}
-            aria-label="Search"
-            className={`ml-0.5 grid size-9 place-items-center rounded-full transition sm:ml-1 ${
+            disabled={!canSend || (scraping && !dirty)}
+            aria-label={dirty ? "Apply filters and search" : "Search"}
+            title={dirty ? "Apply filters and search" : "Search"}
+            className={`relative ml-0.5 grid size-9 place-items-center rounded-full transition sm:ml-1 ${
               canSend
                 ? "bg-foreground text-background shadow-lg shadow-black/40 hover:opacity-90 active:scale-95"
                 : "bg-foreground/10 text-muted"
             }`}
           >
-            {scraping ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
+            {scraping && !dirty ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
+            {dirty && <span aria-hidden className="bg-accent ring-background absolute -top-0.5 -right-0.5 size-2.5 rounded-full ring-2" />}
           </button>
         </div>
       </div>

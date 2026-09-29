@@ -7,21 +7,25 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { BentoGrid, GridSkeleton, featuredThreshold } from "@/components/grid/bento-grid";
 import { Crosshairs } from "@/components/ui/primitives";
 import { api } from "@/lib/client/api";
-import { DEFAULT_FILTERS, filtersFromParams, filtersToParams, type ExploreFilters } from "@/lib/client/filters";
+import { DEFAULT_FILTERS, RANGE_LABELS, filtersFromParams, filtersToParams, type ExploreFilters } from "@/lib/client/filters";
 import { newPostIdsOf, useFavoriteCreators } from "@/lib/client/hooks";
 import { readPreferences, usePreferences } from "@/lib/client/preferences";
 import { creatorKey, parseCreatorKey } from "@/lib/creators";
-import { parseSearch, suggestions } from "@/lib/search";
+import { groupByRelated, parseSearch, suggestions } from "@/lib/search";
 import type { Post, PostPage, ScrapeJob } from "@/lib/types";
 import { CreatorFetchBanner, useCreatorFetch, type CreatorTarget } from "./creator-fetch";
 import { CreatorProgress, JobProgress } from "./load-more-progress";
 import { ScrapeBanner } from "./scrape-banner";
 import { SearchComposer } from "./search-composer";
-import { SearchInsight, SuggestionChips } from "./search-insight";
+import { SearchInsight, SuggestionChips, useQueryInsight } from "./search-insight";
 import { TrendChart } from "./trend-chart";
 
 const PAGE_SIZE = 24;
 const NO_IDS: string[] = [];
+/** While a fetch runs, the feed refreshes at most this often as posts arrive (it always refreshes at the end). */
+const PROGRESS_REFRESH_MS = 6000;
+/** Most "Just fetched" ids kept (matches MAX_IDS in lib/query.ts); newest fetches win. */
+const MAX_FETCHED = 300;
 
 type ScrapeResponse = { status: "cached" | "exhausted" } | { status: "started" | "inflight"; jobId: string };
 
@@ -70,6 +74,9 @@ export function ExploreView() {
   const [fetched, setFetched] = useState<{ params: string; ids: string[] }>({ params: "", ids: [] });
   const apiParams = filtersToParams(filters).toString();
   const justFetchedIds = fetched.params === apiParams ? fetched.ids : NO_IDS;
+  // "Load more posts" goes further back in time on purpose, so the posts it adds are shown even when
+  // they're older than the selected date range (every other filter still applies).
+  const fetchedParams = filtersToParams({ ...filters, dateRange: "all", from: "", to: "" }).toString();
 
   // Favorite creators: without a topic they filter the results to those creators (new content comes from
   // their profiles). With a topic they're boosted — their matching posts first, then everyone else's — and
@@ -77,10 +84,14 @@ export function ExploreView() {
   const creatorFetch = useCreatorFetch();
   const { start: startCreatorFetch } = creatorFetch;
   const { data: favorites } = useFavoriteCreators();
-  const creatorTargets = useMemo<CreatorTarget[]>(() => {
-    const names = new Map((favorites ?? []).map((c) => [creatorKey(c), c.name]));
-    return filters.creators.map((key) => ({ key, label: names.get(key) || `@${parseCreatorKey(key)?.handle ?? key}` }));
-  }, [favorites, filters.creators]);
+  const targetsFor = useCallback(
+    (keys: string[]): CreatorTarget[] => {
+      const names = new Map((favorites ?? []).map((c) => [creatorKey(c), c.name]));
+      return keys.map((key) => ({ key, label: names.get(key) || `@${parseCreatorKey(key)?.handle ?? key}` }));
+    },
+    [favorites],
+  );
+  const creatorTargets = useMemo(() => targetsFor(filters.creators), [targetsFor, filters.creators]);
   const byCreators = creatorTargets.length > 0;
   const boosted = byCreators && Boolean(filters.topic);
   const moreScope = filters.topic ? `topic:${filters.topic.toLowerCase()}` : `creators:${[...filters.creators].sort().join(",")}`;
@@ -97,8 +108,8 @@ export function ExploreView() {
   );
 
   const scrape = useMutation({
-    mutationFn: ({ topic, force }: { topic: string; force?: boolean }) =>
-      api<ScrapeResponse>("/api/scrape", { method: "POST", json: { topic, platforms: filters.platforms, force } }),
+    mutationFn: ({ topic, platforms = filters.platforms, force }: { topic: string; platforms?: ExploreFilters["platforms"]; force?: boolean }) =>
+      api<ScrapeResponse>("/api/scrape", { method: "POST", json: { topic, platforms, force } }),
     onSuccess: (result) => {
       if ("jobId" in result) setJobId(result.jobId);
     },
@@ -113,9 +124,9 @@ export function ExploreView() {
   });
 
   const justFetched = useQuery({
-    queryKey: ["posts", apiParams, "ids", justFetchedIds.join(",")],
+    queryKey: ["posts", fetchedParams, "ids", justFetchedIds.join(",")],
     queryFn: () =>
-      api<PostPage>(`/api/posts?${apiParams}${apiParams ? "&" : ""}ids=${justFetchedIds.join(",")}&limit=${justFetchedIds.length}`),
+      api<PostPage>(`/api/posts?${fetchedParams}${fetchedParams ? "&" : ""}ids=${justFetchedIds.join(",")}&limit=${justFetchedIds.length}`),
     enabled: justFetchedIds.length > 0,
     placeholderData: keepPreviousData,
   });
@@ -129,9 +140,8 @@ export function ExploreView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters.topic, pathname, prefs.autoFetch]);
 
-  // Picking creators fetches their new posts right away (stored posts show immediately). Debounced so
-  // ticking several creators in the menu starts one batch; each creator is requested once per visit and
-  // the server skips creators fetched within SCRAPE_CACHE_TTL.
+  // Creators that arrive via the URL (shared link, reload) fetch their new posts once per visit; the server
+  // skips creators fetched within SCRAPE_CACHE_TTL. Creators picked in the composer are fetched on submit.
   const autoFetchedCreators = useRef(new Set<string>());
   useEffect(() => {
     if (pathname !== "/explore" || !prefs.autoFetch) return;
@@ -144,23 +154,34 @@ export function ExploreView() {
     return () => clearTimeout(timer);
   }, [creatorTargets, pathname, prefs.autoFetch, startCreatorFetch]);
 
-  const onSearch = (topic: string) => {
+  /**
+   * The composer's send button: applies every staged filter at once, then fetches from the sources only
+   * what the change needs. Sort / date / format changes just re-query stored posts; a new topic, platform
+   * or creator fetches those; re-sending unchanged filters refreshes the topic and all selected creators.
+   */
+  const onSubmit = (next: ExploreFilters) => {
+    const topic = next.topic.trim().replace(/\s+/g, " ");
+    const unchanged = filtersToParams({ ...next, topic }).toString() === apiParams;
+    const platformsChanged = [...next.platforms].sort().join(",") !== [...filters.platforms].sort().join(",");
+    const topicChanged = topic.toLowerCase() !== filters.topic.toLowerCase();
     autoScraped.current = topic;
-    updateFilters({ topic });
+    updateFilters({ ...next, topic });
     if (!prefs.autoFetch) return;
-    if (byCreators) {
-      for (const t of creatorTargets) autoFetchedCreators.current.add(t.key);
-      void startCreatorFetch(creatorTargets);
+    const targets = targetsFor(next.creators).filter((t) => unchanged || !autoFetchedCreators.current.has(t.key));
+    if (targets.length) {
+      for (const t of targets) autoFetchedCreators.current.add(t.key);
+      void startCreatorFetch(targets);
     }
-    if (topic.length >= 2) scrape.mutate({ topic });
+    if (topic.length >= 2 && (unchanged || topicChanged || platformsChanged)) scrape.mutate({ topic, platforms: next.platforms });
   };
+  const onSearch = (topic: string) => onSubmit({ ...filters, topic });
 
   /** Records what a finished load-more added, for the "Just fetched" section. */
   const finishMore = useCallback((state: MoreState, ids: string[]) => {
     setFetched((current) =>
       current.params === state.params
-        ? { params: current.params, ids: [...new Set([...current.ids, ...ids])] }
-        : { params: state.params, ids },
+        ? { params: current.params, ids: [...new Set([...current.ids, ...ids])].slice(-MAX_FETCHED) }
+        : { params: state.params, ids: ids.slice(-MAX_FETCHED) },
     );
     setMore({ ...state, done: true, added: ids.length });
   }, []);
@@ -175,10 +196,23 @@ export function ExploreView() {
     },
     [queryClient, more, finishMore],
   );
+  // The topic's own posts are stored before its related searches run: show them (and each related search's
+  // posts) as they arrive instead of only when the whole fetch is done.
+  const lastProgressRefresh = useRef(0);
+  const onScrapeProgress = useCallback(() => {
+    if (Date.now() - lastProgressRefresh.current < PROGRESS_REFRESH_MS) return;
+    lastProgressRefresh.current = Date.now();
+    queryClient.invalidateQueries({ queryKey: ["posts"] });
+    queryClient.invalidateQueries({ queryKey: ["timeline"] });
+  }, [queryClient]);
   const dismissBanner = useCallback(() => setJobId(null), []);
 
   const hidden = useMemo(() => new Set(justFetchedIds), [justFetchedIds]);
-  const items = useMemo(() => (posts.data?.pages.flatMap((p) => p.items) ?? []).filter((p) => !hidden.has(p.id)), [posts.data, hidden]);
+  const items = useMemo(() => {
+    // Trending scores refresh between page requests, which can shift a post onto the next page too.
+    const seen = new Set(hidden);
+    return (posts.data?.pages.flatMap((p) => p.items) ?? []).filter((p) => !seen.has(p.id) && Boolean(seen.add(p.id)));
+  }, [posts.data, hidden]);
   const threshold = useMemo(() => featuredThreshold(posts.data?.pages[0]?.items ?? []), [posts.data?.pages]);
   const total = posts.data?.pages[0]?.total ?? 0;
   const creatorMatches = posts.data?.pages[0]?.creatorMatches ?? 0;
@@ -186,6 +220,12 @@ export function ExploreView() {
   const fromCreators = boosted ? items.filter((p) => selectedCreators.has(authorKey(p))) : [];
   const fromEveryone = boosted ? items.filter((p) => !selectedCreators.has(authorKey(p))) : items;
   const fetchedItems = justFetched.data?.items ?? [];
+  // A topic search ranks its own posts first, then each related search's ("Also showing" chips): one section each.
+  const { data: insight } = useQueryInsight(filters.topic);
+  const groups = useMemo(
+    () => (filters.topic && !filters.exact && !boosted && insight?.related.length ? groupByRelated(items, filters.topic, insight) : null),
+    [items, filters.topic, filters.exact, boosted, insight],
+  );
 
   const sentinel = useRef<HTMLDivElement>(null);
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = posts;
@@ -246,8 +286,7 @@ export function ExploreView() {
     <SearchComposer
       docked={docked}
       filters={filters}
-      onChange={updateFilters}
-      onSearch={onSearch}
+      onSubmit={onSubmit}
       onRefresh={() => {
         if (byCreators) void startCreatorFetch(creatorTargets, { force: true });
         if (filters.topic) scrape.mutate({ topic: filters.topic, force: true });
@@ -283,15 +322,22 @@ export function ExploreView() {
 
       {!docked && composer}
 
-      {filters.topic && <SearchInsight topic={filters.topic} onSearch={onSearch} />}
+      {filters.topic && (
+        <SearchInsight
+          topic={filters.topic}
+          exact={filters.exact}
+          onSearch={(topic) => onSubmit({ ...filters, topic, exact: false })}
+          onExactChange={(exact) => updateFilters({ exact })}
+        />
+      )}
 
       {scrape.isError && (
         <p className="rounded-md border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm text-red-400">{scrape.error.message}</p>
       )}
-      <ScrapeBanner jobId={jobId} onFinished={onScrapeFinished} onDismiss={dismissBanner} />
+      <ScrapeBanner jobId={jobId} onFinished={onScrapeFinished} onProgress={onScrapeProgress} onDismiss={dismissBanner} />
       <CreatorFetchBanner state={creatorFetch.state} running={creatorFetch.running} onDismiss={creatorFetch.dismiss} />
 
-      {prefs.showTrendChart && <TrendChart topic={filters.topic} platforms={filters.platforms} creators={filters.creators} />}
+      {prefs.showTrendChart && <TrendChart filters={filters} />}
 
       <div className="text-muted flex items-center justify-between pt-1 text-sm">
         <span>
@@ -353,6 +399,21 @@ export function ExploreView() {
                 </>
               )}
             </>
+          ) : groups ? (
+            <>
+              {groups.direct.length > 0 && (
+                <>
+                  {groups.related.length > 0 && <SectionHeading>Results · {insight?.corrected ?? filters.topic}</SectionHeading>}
+                  {grid(groups.direct)}
+                </>
+              )}
+              {groups.related.map((group, i) => (
+                <div key={group.query} className={i > 0 || groups.direct.length ? "mt-8" : ""}>
+                  <SectionHeading>Related · {group.query}</SectionHeading>
+                  {grid(group.posts)}
+                </div>
+              ))}
+            </>
           ) : (
             grid(items)
           )}
@@ -367,6 +428,7 @@ export function ExploreView() {
             <div className="mt-8">
               <SectionHeading>
                 Just fetched · {fetchedItems.length} new post{fetchedItems.length === 1 ? "" : "s"}
+                {filters.dateRange !== "all" && ` · incl. older than ${RANGE_LABELS[filters.dateRange].toLowerCase()}`}
               </SectionHeading>
               {grid(fetchedItems)}
             </div>
@@ -385,12 +447,24 @@ export function ExploreView() {
             <div className="flex flex-col items-center gap-3 px-4 py-8 text-center">
               {moreHere?.done && (
                 <p className="text-sm">
-                  {moreHere.added > 0
-                    ? `Added ${moreHere.added.toLocaleString()} new post${moreHere.added === 1 ? "" : "s"} — they're in “Just fetched” above.`
-                    : "No new posts this time — the sources returned ones you already have."}
+                  {moreHere.added === 0
+                    ? "No new posts this time — the sources returned ones you already have."
+                    : justFetched.isFetching
+                      ? `Added ${moreHere.added.toLocaleString()} new post${moreHere.added === 1 ? "" : "s"} — loading them…`
+                      : fetchedItems.length >= moreHere.added || filters.mediaTypes.length + filters.platforms.length === 0
+                        ? `Added ${moreHere.added.toLocaleString()} new post${moreHere.added === 1 ? "" : "s"} — they're in “Just fetched” above.`
+                        : `Added ${moreHere.added.toLocaleString()} new posts — ${fetchedItems.length.toLocaleString()} match your platform / format filters and are in “Just fetched” above.`}
                 </p>
               )}
-              <p className="text-muted text-sm">You&apos;ve reached the end.</p>
+              <p className="text-muted text-sm">
+                You&apos;ve reached the end
+                {filters.dateRange !== "all" && ` of ${RANGE_LABELS[filters.dateRange].toLowerCase()}`}.
+              </p>
+              {filters.dateRange !== "all" && (
+                <button type="button" onClick={() => updateFilters({ dateRange: "all", from: "", to: "" })} className="text-accent text-sm hover:underline">
+                  Show stored posts from any time
+                </button>
+              )}
               {canLoadMore ? (
                 exhaustedScope === moreScope ? (
                   <p className="text-muted max-w-md text-xs">

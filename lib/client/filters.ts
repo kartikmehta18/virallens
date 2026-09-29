@@ -12,6 +12,8 @@ export interface ExploreFilters {
   mediaTypes: MediaType[];
   /** Creator keys ("platform:handle") — only posts by these creators. */
   creators: string[];
+  /** With a topic: direct matches only, without its AI-related searches (see /api/posts). */
+  exact: boolean;
 }
 
 export const DEFAULT_FILTERS: ExploreFilters = {
@@ -23,6 +25,7 @@ export const DEFAULT_FILTERS: ExploreFilters = {
   to: "",
   mediaTypes: [],
   creators: [],
+  exact: false,
 };
 
 const pickList = <T extends string>(value: string | null, allowed: readonly T[]) =>
@@ -43,6 +46,7 @@ export function filtersFromParams(params: URLSearchParams, defaults: ExploreFilt
     to: params.get("to") ?? "",
     mediaTypes: pickList(params.get("mediaType"), MEDIA_TYPES),
     creators: parseCreatorKeys(params.get("creator")).map(creatorKey),
+    exact: params.get("exact") === "1",
   };
 }
 
@@ -60,6 +64,7 @@ export function filtersToParams(filters: ExploreFilters, defaults: ExploreFilter
   }
   if (filters.mediaTypes.length) params.set("mediaType", filters.mediaTypes.join(","));
   if (filters.creators.length) params.set("creator", filters.creators.join(","));
+  if (filters.exact && filters.topic.trim()) params.set("exact", "1");
   return params;
 }
 

@@ -1,5 +1,5 @@
 import { creatorKey } from "../creators";
-import { parseSearch, postHaystack, scoreText, type ParsedSearch } from "../search";
+import { parseRelated, parseSearch, postHaystack, scoreTopic, type ParsedSearch } from "../search";
 import type { CreatorRef, Post, PostQuery, SortKey } from "../types";
 import type { CreatorSummary } from "./types";
 
@@ -98,9 +98,9 @@ export function summarizeCreators(posts: Post[], refs: CreatorRef[]): Record<str
 }
 
 /** Keyword search tier for the memory backend: preferred creator first, then relevance (terms + phrase). */
-export function searchTier(post: Post, parsed: ParsedSearch | null, prefer: Set<string>) {
+export function searchTier(post: Post, parsed: ParsedSearch | null, prefer: Set<string>, related: ParsedSearch[] = []) {
   const pref = prefer.has(creatorKey({ platform: post.platform, handle: post.authorHandle })) ? 1 : 0;
-  const relevance = parsed ? scoreText(postHaystack(post), parsed).relevance : 0;
+  const relevance = parsed ? scoreTopic(postHaystack(post), parsed, related).relevance : 0;
   return pref * 1000 + relevance;
 }
 
@@ -108,6 +108,7 @@ export function matchesQuery(
   post: Post,
   query: PostQuery,
   parsed: ParsedSearch | null = query.topic ? parseSearch(query.topic) : null,
+  related: ParsedSearch[] = parsed ? parseRelated(query.related, parsed) : [],
 ): boolean {
   if (query.ids?.length && !query.ids.includes(post.id)) return false;
   if (query.platforms?.length && !query.platforms.includes(post.platform)) return false;
@@ -118,6 +119,6 @@ export function matchesQuery(
   if (query.creators?.length && !query.creators.some((c) => c.platform === post.platform && c.handle === post.authorHandle.toLowerCase())) {
     return false;
   }
-  if (parsed && !scoreText(postHaystack(post), parsed).ok) return false;
+  if (parsed && !scoreTopic(postHaystack(post), parsed, related).ok) return false;
   return true;
 }

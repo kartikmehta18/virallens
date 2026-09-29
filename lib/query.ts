@@ -25,7 +25,7 @@ function parseDate(value: string | null, endOfDay = false): Date | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
-const MAX_IDS = 200;
+const MAX_IDS = 300;
 
 /** Parses /api/posts search params into a validated PostQuery. */
 export function parsePostQuery(params: URLSearchParams): PostQuery {
