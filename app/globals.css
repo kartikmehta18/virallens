@@ -20,6 +20,10 @@
   /* chart series color, validated on both surfaces (dataviz validator) */
   --chart-series: #2f80ff;
   --chart-grid: #ededed;
+  /* status (good / warning / critical): always paired with an icon + label, never color alone */
+  --status-good: #0ca30c;
+  --status-warn: #b07a00;
+  --status-bad: #d03b3b;
   --cut: 10px;
 }
 
@@ -31,6 +35,7 @@
   --muted: #a3a3a3;
   --border: #262626;
   --chart-grid: #1c1c1c;
+  --status-warn: #fab219;
 }
 
 @theme inline {
@@ -44,6 +49,9 @@
   --color-accent-2: var(--accent-2);
   --color-accent-soft: var(--accent-soft);
   --color-accent-deep: var(--accent-deep);
+  --color-good: var(--status-good);
+  --color-warn: var(--status-warn);
+  --color-bad: var(--status-bad);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }

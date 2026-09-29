@@ -6,6 +6,7 @@ import {
   ChevronDown,
   Compass,
   FlaskConical,
+  Gauge,
   LogOut,
   Menu,
   Settings,
@@ -42,6 +43,14 @@ const PLATFORM_ITEMS = [
     detail: "Hook, format, CTA and emotional angle — explained for every post.",
   },
   {
+    href: "/simulator",
+    icon: Gauge,
+    title: "Virality simulator",
+    body: "Score a post before you publish it",
+    preview: "Test before you post",
+    detail: "Benchmarks your caption and image against real top performers in your niche — with fixes and rewrites.",
+  },
+  {
     href: "/boards",
     icon: Bookmark,
     title: "Boards",
@@ -69,6 +78,7 @@ const PLATFORM_ITEMS = [
 
 const NAV = [
   { href: "/explore", label: "Explore" },
+  { href: "/simulator", label: "Simulator" },
   { href: "/creators", label: "Creators" },
   { href: "/boards", label: "Boards" },
   { href: "/watches", label: "Alerts" },
@@ -346,6 +356,7 @@ function MobileMenu() {
   const handle = user ? (user.username ?? user.name ?? user.email?.split("@")[0] ?? "user") : "";
   const links = [
     { href: "/explore", icon: Compass, label: "Explore", body: "The ranked viral feed" },
+    { href: "/simulator", icon: Gauge, label: "Simulator", body: "Score a post before you publish it" },
     { href: "/creators", icon: Users, label: "Creators", body: "Favorite creators and their posts" },
     { href: "/boards", icon: Bookmark, label: "Boards", body: "Your saved swipe files" },
     { href: "/watches", icon: Bell, label: "Alerts", body: "Topics you're watching" },

@@ -1,8 +1,8 @@
 import type { Post } from "../types";
 
-const CTA = /\b(follow|save|share|repost|comment|drop|tag|subscribe|link in bio|what do you think|thoughts\??|agree\??|👇)/i;
-const NUMBERED = /(^|\n)\s*(\d+[.)]|[-•→✅])\s+/;
-const EMOTION =
+export const CTA = /\b(follow|save|share|repost|comment|drop|tag|subscribe|link in bio|what do you think|thoughts\??|agree\??|👇)/i;
+export const NUMBERED = /(^|\n)\s*(\d+[.)]|[-•→✅])\s+/;
+export const EMOTION =
   /\b(unpopular|nobody|secret|mistake|wild|shocking|never|stop|truth|dark side|finally|changed everything|regret)\b|🤯|🔥|😱/i;
 
 /** Rule-based "why it worked" analysis used when no LLM key is configured. */

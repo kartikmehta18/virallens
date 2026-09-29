@@ -1,4 +1,5 @@
 import "server-only";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { env } from "../env";
 
 const API = "https://api.apify.com/v2";
@@ -18,6 +19,48 @@ interface ApifyRun {
   statusMessage?: string;
   defaultDatasetId: string;
 }
+
+// Apify plans cap how many actor runs may be *running* at once (free plan: 5) and reject the rest with
+// 402 "concurrent-runs-limit-exceeded". Every run here takes a slot from start until it finishes, so a
+// search (3 platforms, plus related queries) and creator fetches queue instead of failing. Background work
+// (related searches) runs with low priority, so a search's own runs always go first.
+const MAX_CONCURRENT = Math.max(1, Number(process.env.APIFY_MAX_CONCURRENT) || 5);
+// Kept on globalThis: Next can load this module once per route bundle (scrape, creator fetch, cron), and
+// they must all share one queue.
+interface SlotQueue {
+  active: number;
+  high: (() => void)[];
+  low: (() => void)[];
+  priority: AsyncLocalStorage<"low">;
+}
+const queue: SlotQueue = ((globalThis as { __virallensApifyQueue?: SlotQueue }).__virallensApifyQueue ??= {
+  active: 0,
+  high: [],
+  low: [],
+  priority: new AsyncLocalStorage<"low">(),
+});
+
+/** Runs `fn` with its Apify actor runs queued behind everyone else's (used for related-query searches). */
+export const withLowPriority = <T>(fn: () => Promise<T>) => queue.priority.run("low", fn);
+
+async function acquireSlot() {
+  if (queue.active < MAX_CONCURRENT) {
+    queue.active++;
+    return;
+  }
+  await new Promise<void>((resolve) => queue[queue.priority.getStore() === "low" ? "low" : "high"].push(resolve));
+}
+
+function releaseSlot() {
+  const next = queue.high.shift() ?? queue.low.shift();
+  if (next) next(); // hands the slot straight over
+  else queue.active--;
+}
+
+/** Another process (cron, a second server) can still fill the account's quota: wait and retry the start. */
+const CONCURRENCY_RETRY_MS = [3_000, 6_000, 12_000, 20_000, 30_000];
+const isConcurrencyLimit = (error: unknown) =>
+  error instanceof Error && /Apify (402|429)/.test(error.message) && /concurrent|rate-limit|too many/i.test(error.message);
 
 async function apify<T>(path: string, init?: RequestInit): Promise<T> {
   const token = env.apifyToken;
@@ -58,11 +101,25 @@ export async function getDatasetItems(datasetId: string, limit: number): Promise
   return apify<RawItem[]>(`/datasets/${datasetId}/items?clean=true&format=json&limit=${limit}`);
 }
 
-/** Runs an actor end-to-end: start → poll → fetch dataset items. */
+/** Runs an actor end-to-end: (queue for a slot) → start → poll → fetch dataset items. */
 export async function runActor(actorId: string, input: unknown, limit: number, onStart?: (runId: string) => void): Promise<RawItem[]> {
-  const run = await startActor(actorId, input);
-  onStart?.(run.id);
-  const finished = await waitForRun(run.id);
+  await acquireSlot();
+  let finished: ApifyRun;
+  try {
+    let run: ApifyRun | undefined;
+    for (let attempt = 0; !run; attempt++) {
+      try {
+        run = await startActor(actorId, input);
+      } catch (error) {
+        if (!isConcurrencyLimit(error) || attempt >= CONCURRENCY_RETRY_MS.length) throw error;
+        await new Promise((resolve) => setTimeout(resolve, CONCURRENCY_RETRY_MS[attempt]));
+      }
+    }
+    onStart?.(run.id);
+    finished = await waitForRun(run.id);
+  } finally {
+    releaseSlot();
+  }
   if (finished.status !== "SUCCEEDED") {
     throw new Error(`Apify run ${finished.status.toLowerCase()}${finished.statusMessage ? `: ${finished.statusMessage}` : ""}`);
   }

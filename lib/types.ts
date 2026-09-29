@@ -58,6 +58,11 @@ export interface PostQuery {
   preferCreators?: CreatorRef[];
   /** Only these post ids (e.g. the posts a "load more" fetch just added), still filtered and sorted. */
   ids?: string[];
+  /**
+   * With a topic: related searches (AI suggestions, spelling fix) whose matches are included too — "ai" also
+   * finds "chatgpt" and "llm" posts. They rank alongside the weakest direct matches, then by the chosen sort.
+   */
+  related?: string[];
   /** One or more sort keys. Several keys blend their rankings (average percentile rank). */
   sort: SortKey[];
   from?: Date;
@@ -144,6 +149,8 @@ export interface ScrapeRunInfo {
   step?: number;
   /** Set when a load-more step searched a related query instead of the topic itself. */
   query?: string;
+  /** First fetch: the related searches fetched after the topic's own posts were stored (the "Also showing" chips). */
+  related?: string[];
   items?: number;
   /** Posts this run added that weren't stored before (capped). */
   newPostIds?: string[];
@@ -237,4 +244,69 @@ export interface TimelinePoint {
   date: string;
   posts: number;
   engagement: number;
+}
+
+// ── Virality simulator (POST /api/simulate) ────────────────────────────────────────────────────────────
+
+/** strong ≥ 70, average 40–69, weak < 40 — rewrites are suggested for anything below strong. */
+export type SimulationGrade = "strong" | "average" | "weak";
+export type SignalStatus = "good" | "warn" | "bad";
+
+/** One structural check of the draft against the benchmark's top performers. */
+export interface SimulationSignal {
+  key: string;
+  label: string;
+  yours: string;
+  top: string;
+  status: SignalStatus;
+  /** What to do about it (or why it's fine). */
+  tip: string;
+}
+
+/** A diff-style fix: what's wrong, what to change, and a concrete rewrite. */
+export interface SimulationFix {
+  issue: string;
+  change: string;
+  example: string;
+}
+
+/** A complete rewrite of the draft, ready to publish. */
+export interface SimulationSuggestion {
+  hook: string;
+  content: string;
+  why: string;
+}
+
+export interface SimulationBenchmark {
+  platform: Platform;
+  /** The niche the draft was compared in: the user's topic, or the draft's own key words. */
+  niche: string;
+  /** "niche": same subject + platform; "cross-platform": same subject, any platform; "platform": no niche match. */
+  scope: "niche" | "cross-platform" | "platform";
+  sampleSize: number;
+  average: number;
+  /** Average score of the top / bottom quartile of the benchmark. */
+  topAverage: number;
+  bottomAverage: number;
+  /** The best-scoring real posts in the benchmark. */
+  examples: { post: Post; score: number }[];
+}
+
+export interface SimulationResult {
+  /** Predicted 0–100 virality score: the engagement percentile among stored posts on the platform. */
+  score: number;
+  grade: SimulationGrade;
+  verdict: string;
+  summary: string;
+  hook: { rating: "weak" | "average" | "strong"; feedback: string };
+  /** Feedback on the uploaded image (AI providers only). */
+  visual: string | null;
+  strengths: string[];
+  fixes: SimulationFix[];
+  signals: SimulationSignal[];
+  /** Two rewrites (hook + content) — only when the draft isn't strong yet. */
+  suggestions: SimulationSuggestion[];
+  benchmark: SimulationBenchmark;
+  provider: AiBreakdown["provider"];
+  generatedAt: string;
 }

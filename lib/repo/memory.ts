@@ -1,9 +1,9 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { scorePost } from "../scoring";
+import { TRENDING_REFRESH_MS, platformFactors, scorePost, setPlatformFactors, trendingScore } from "../scoring";
 import { creatorKey } from "../creators";
-import type { BoardSummary, FavoriteCreator, Post, ScrapeJob, WatchedTopic } from "../types";
-import { parseSearch, postHaystack } from "../search";
+import type { BoardSummary, FavoriteCreator, Platform, Post, ScrapeJob, WatchedTopic } from "../types";
+import { parseRelated, parseSearch, postHaystack } from "../search";
 import { matchesQuery, rankPosts, searchTier, summarizeCreators } from "./shared";
 import type { Repository, StoredInvite, StoredUser } from "./types";
 
@@ -60,6 +60,30 @@ function ownedBoard(userId: string, boardId: string) {
   return board && board.userId === userId ? board : null;
 }
 
+// Mirrors refreshTrending() in prisma.ts: platform baselines + time decay, refreshed every TRENDING_REFRESH_MS.
+let trendingRefreshedAt = 0;
+function refreshTrending(force = false) {
+  const now = Date.now();
+  if (!force && now - trendingRefreshedAt < TRENDING_REFRESH_MS) return;
+  trendingRefreshedAt = now;
+  const recent = now - 30 * 24 * 3_600_000;
+  const sums: Partial<Record<Platform, { logSum: number; n: number }>> = {};
+  for (const post of state.posts.values()) {
+    if (new Date(post.publishedAt).getTime() < recent) continue;
+    const s = (sums[post.platform] ??= { logSum: 0, n: 0 });
+    s.logSum += Math.log(post.engagementScore + 1);
+    s.n++;
+  }
+  setPlatformFactors(
+    platformFactors(
+      Object.fromEntries(Object.entries(sums).map(([p, s]) => [p, { typical: Math.exp(s.logSum / s.n) - 1, n: s.n }])),
+    ),
+  );
+  for (const post of state.posts.values()) {
+    post.trendingScore = Math.round(trendingScore(post.engagementScore, post.publishedAt, post.platform, now) * 1000) / 1000;
+  }
+}
+
 export const memoryRepository: Repository = {
   kind: "memory",
 
@@ -86,12 +110,14 @@ export const memoryRepository: Repository = {
     },
 
     async search(query) {
+      refreshTrending();
       const parsed = query.topic ? parseSearch(query.topic) : null;
+      const related = parsed ? parseRelated(query.related, parsed) : [];
       const prefer = new Set((query.preferCreators ?? []).map(creatorKey));
       const matches = rankPosts(
-        [...state.posts.values()].filter((post) => matchesQuery(post, query, parsed)),
+        [...state.posts.values()].filter((post) => matchesQuery(post, query, parsed, related)),
         query.sort,
-        parsed ? (post) => searchTier(post, parsed, prefer) : undefined,
+        parsed ? (post) => searchTier(post, parsed, prefer, related) : undefined,
       );
       const start = (query.page - 1) * query.limit;
       const items = matches.slice(start, start + query.limit);
@@ -133,10 +159,18 @@ export const memoryRepository: Repository = {
       return oldest;
     },
 
-    async timelineSource(topic, platforms, since, creators) {
-      const query = { topic, platforms, creators, from: since, sort: ["newest" as const], page: 1, limit: 1 };
+    async timelineSource(topic, platforms, since, { creators, mediaTypes, to, related } = {}) {
+      const query = { topic, platforms, creators, mediaTypes, related, from: since, to, sort: ["newest" as const], page: 1, limit: 1 };
       const parsed = topic ? parseSearch(topic) : null;
       return [...state.posts.values()].filter((post) => matchesQuery(post, query, parsed));
+    },
+
+    async engagementSample(platform, limit) {
+      return [...state.posts.values()]
+        .filter((post) => post.platform === platform)
+        .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
+        .slice(0, limit)
+        .map((post) => post.engagementScore);
     },
 
     async setBreakdown(postId, breakdown) {
@@ -145,6 +179,7 @@ export const memoryRepository: Repository = {
     },
 
     async rescoreSince(since) {
+      refreshTrending(true);
       let count = 0;
       for (const post of state.posts.values()) {
         if (new Date(post.publishedAt) < since) continue;

@@ -6,24 +6,45 @@ import { useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, type TooltipContentProps } from "recharts";
 import { api } from "@/lib/client/api";
 import { Crosshairs } from "@/components/ui/primitives";
+import { filtersToParams, type ExploreFilters } from "@/lib/client/filters";
 import { formatCount } from "@/lib/client/format";
-import type { Platform, TimelinePoint } from "@/lib/types";
+import type { TimelinePoint } from "@/lib/types";
 
-const dayLabel = (iso: string) =>
-  new Date(`${iso}T00:00:00Z`).toLocaleDateString("en", { month: "short", day: "numeric", timeZone: "UTC" });
+// Hourly buckets are "YYYY-MM-DDTHH", daily ones "YYYY-MM-DD" (both UTC).
+const pointDate = (key: string) => new Date(key.length > 10 ? `${key}:00:00Z` : `${key}T00:00:00Z`);
+const dayLabel = (key: string) =>
+  key.length > 10
+    ? pointDate(key).toLocaleTimeString("en", { hour: "numeric" })
+    : pointDate(key).toLocaleDateString("en", { month: "short", day: "numeric", timeZone: "UTC" });
 
-/** Daily engagement volume for the current topic (single series, single axis; post count lives in the tooltip). */
-export function TrendChart({ topic, platforms, creators = [] }: { topic: string; platforms: Platform[]; creators?: string[] }) {
+function windowLabel(filters: ExploreFilters) {
+  switch (filters.dateRange) {
+    case "24h":
+      return "the last 24 hours";
+    case "7d":
+      return "the last 7 days";
+    case "custom":
+      return filters.from || filters.to ? `${filters.from || "…"} → ${filters.to || "…"}` : "the last 30 days";
+    default:
+      return "the last 30 days";
+  }
+}
+
+/**
+ * Engagement volume for the applied filters (single series, single axis; post count lives in the tooltip).
+ * Uses the same date range, platforms, formats and creators as the grid, so the counts agree.
+ */
+export function TrendChart({ filters }: { filters: ExploreFilters }) {
   const [open, setOpen] = useState(true);
-  const params = new URLSearchParams({ days: "30" });
-  if (topic) params.set("topic", topic);
-  if (platforms.length) params.set("platform", platforms.join(","));
-  if (creators.length) params.set("creator", creators.join(","));
+  const params = filtersToParams({ ...filters, sort: ["trending"] });
+  params.set("days", "30");
 
   const { data, isLoading } = useQuery({
     queryKey: ["timeline", params.toString()],
     queryFn: () => api<{ points: TimelinePoint[] }>(`/api/posts/timeline?${params}`).then((r) => r.points),
+    placeholderData: (previous) => previous,
   });
+  const topic = filters.topic;
 
   const totals = (data ?? []).reduce((acc, p) => ({ posts: acc.posts + p.posts, engagement: acc.engagement + p.engagement }), {
     posts: 0,
@@ -35,11 +56,12 @@ export function TrendChart({ topic, platforms, creators = [] }: { topic: string;
     <section className="border-border bg-surface relative border">
       <Crosshairs />
       <button onClick={() => setOpen((o) => !o)} className="flex w-full flex-wrap items-center gap-x-5 gap-y-1 px-4 py-3 text-left">
-        <h2 className="text-sm font-semibold">Engagement over the last 30 days{topic ? ` · “${topic}”` : ""}</h2>
+        <h2 className="text-sm font-semibold">Engagement over {windowLabel(filters)}{topic ? ` · “${topic}”` : ""}</h2>
         <span className="text-muted text-xs">
           <strong className="text-foreground font-semibold">{formatCount(totals.engagement)}</strong> engagement ·{" "}
           <strong className="text-foreground font-semibold">{formatCount(totals.posts)}</strong> posts
           {peak && peak.engagement > 0 && <> · peak {dayLabel(peak.date)}</>}
+          {filters.dateRange === "all" && <> · grid shows all time</>}
         </span>
         <ChevronDown className={`text-muted ml-auto size-4 transition ${open ? "rotate-180" : ""}`} />
       </button>
@@ -97,7 +119,10 @@ function ChartTooltip({ active, payload }: TooltipContentProps) {
   if (!active || !point) return null;
   return (
     <div className="border-border bg-surface rounded-xl border px-3 py-2 text-xs shadow-lg">
-      <p className="mb-1 font-medium">{dayLabel(point.date)}</p>
+      <p className="mb-1 font-medium">
+        {point.date.length > 10 ? `${pointDate(point.date).toLocaleDateString("en", { month: "short", day: "numeric" })}, ` : ""}
+        {dayLabel(point.date)}
+      </p>
       <p className="text-muted flex items-center gap-2">
         <span className="size-2 rounded-full bg-[var(--chart-series)]" />
         Engagement <span className="text-foreground ml-auto pl-3 font-semibold tabular-nums">{point.engagement.toLocaleString()}</span>

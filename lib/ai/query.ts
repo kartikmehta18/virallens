@@ -10,6 +10,10 @@ import { geminiJson } from "./gemini";
 // cached for 30 days. Without a Gemini key the feature is simply off (no suggestions), nothing breaks.
 
 const EMPTY: QueryInsight = { corrected: null, related: [] };
+/** New (uncached) queries per user/IP per hour — keeps the Gemini free-tier quota safe. */
+export const UNDERSTAND_HOURLY_LIMIT = 60;
+/** How long a feed request waits for a first-time (uncached) Gemini answer before going without it. */
+const FEED_WAIT_MS = 3000;
 const TTL = 30 * 24 * 60 * 60;
 const RETRY_AFTER_ERROR = 60 * 60;
 
@@ -55,13 +59,39 @@ export async function postSearchQuery(post: { id: string; caption: string; tags:
   }
 }
 
+const cacheKey = (q: string) => `ai:query:v1:${q.toLowerCase()}`;
+
+/**
+ * Searches to include alongside `topic` in the feed: its spelling fix, then the related queries. Cached
+ * answers are free; a first-time query costs one Gemini call against the caller's hourly budget and is
+ * awaited at most FEED_WAIT_MS (it still finishes and caches in the background).
+ */
+export async function relatedSearches(topic: string, rateKey: () => Promise<string>): Promise<string[]> {
+  const q = normalizeTopic(topic);
+  if (q.length < 2 || !env.geminiKey) return [];
+  const cache = await getCache();
+  let insight: QueryInsight | null = null;
+  const cached = await cache.get(cacheKey(q));
+  if (cached) insight = JSON.parse(cached) as QueryInsight;
+  else {
+    const used = await cache.incr(`ratelimit:understand:${await rateKey()}`, 3600);
+    if (used > UNDERSTAND_HOURLY_LIMIT) return [];
+    insight = await Promise.race([
+      understandQuery(q),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), FEED_WAIT_MS)),
+    ]);
+  }
+  if (!insight) return [];
+  return [...(insight.corrected ? [insight.corrected] : []), ...insight.related];
+}
+
 /** Cached; returns EMPTY when no Gemini key is configured or the call fails. */
 export async function understandQuery(query: string): Promise<QueryInsight> {
   const q = normalizeTopic(query);
   if (q.length < 2 || !env.geminiKey) return EMPTY;
 
   const cache = await getCache();
-  const key = `ai:query:v1:${q.toLowerCase()}`;
+  const key = cacheKey(q);
   const cached = await cache.get(key);
   if (cached) return JSON.parse(cached) as QueryInsight;
 
@@ -92,4 +122,18 @@ export async function understandQuery(query: string): Promise<QueryInsight> {
     await cache.set(key, JSON.stringify(EMPTY), RETRY_AFTER_ERROR);
     return EMPTY;
   }
+}
+
+/**
+ * Adds the topic's related searches to a feed query (posts, timeline, export), unless `exact=1` asks for
+ * direct matches only. `rateKey` (user id, else IP) is only resolved on a Gemini cache miss.
+ */
+export async function withRelated<T extends { topic?: string; related?: string[] }>(
+  query: T,
+  params: URLSearchParams,
+  rateKey: () => Promise<string>,
+): Promise<T> {
+  if (!query.topic || params.get("exact") === "1") return query;
+  const related = await relatedSearches(query.topic, rateKey);
+  return related.length ? { ...query, related } : query;
 }

@@ -12,19 +12,33 @@ import type { ScrapeJob } from "@/lib/types";
 interface Props {
   jobId: string | null;
   onFinished: (job: ScrapeJob) => void;
+  /** New posts were stored while the job is still running (the topic's own posts, then each related search's). */
+  onProgress?: (job: ScrapeJob) => void;
   onDismiss: () => void;
 }
 
 const isDone = (job?: ScrapeJob) => job?.status === "succeeded" || job?.status === "failed";
 
 /** Polls a scrape job and shows per-platform progress while Apify actors run. */
-export function ScrapeBanner({ jobId, onFinished, onDismiss }: Props) {
+export function ScrapeBanner({ jobId, onFinished, onProgress, onDismiss }: Props) {
   const { data: job } = useQuery({
     queryKey: ["scrape", jobId],
     queryFn: () => api<ScrapeJob>(`/api/scrape/status/${jobId}`),
     enabled: Boolean(jobId),
     refetchInterval: (query) => (isDone(query.state.data) ? false : 2500),
   });
+
+  const progress = useRef({ jobId: "", posts: 0 });
+  useEffect(() => {
+    if (!job || isDone(job) || !onProgress) return;
+    if (progress.current.jobId !== job.id) progress.current = { jobId: job.id, posts: 0 };
+    if (job.postsFound > progress.current.posts) {
+      progress.current.posts = job.postsFound;
+      onProgress(job);
+    }
+  }, [job, onProgress]);
+  // Related searches still running after the topic's own posts were stored.
+  const relatedPending = [...new Set(job?.runs.flatMap((run) => (run.status === "running" ? (run.related ?? []) : [])) ?? [])];
 
   const reported = useRef<string | null>(null);
   useEffect(() => {
@@ -55,7 +69,9 @@ export function ScrapeBanner({ jobId, onFinished, onDismiss }: Props) {
             )}
             <span className="font-medium">
               {!job || !isDone(job)
-                ? `Fetching fresh posts for “${job?.topic ?? "…"}”`
+                ? relatedPending.length
+                  ? `Found ${job?.postsFound ?? 0} posts for “${job?.topic}” — now fetching related: ${relatedPending.join(", ")}`
+                  : `Fetching fresh posts for “${job?.topic ?? "…"}”`
                 : job.status === "failed"
                   ? "Couldn't fetch new posts"
                   : `Found ${job.postsFound} posts for “${job.topic}”`}

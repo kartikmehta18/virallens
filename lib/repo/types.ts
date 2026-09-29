@@ -5,6 +5,7 @@ import type {
   FavoriteCreator,
   BoardDetail,
   BoardSummary,
+  MediaType,
   Platform,
   Post,
   PostInput,
@@ -112,8 +113,10 @@ export interface Repository {
       topic: string | undefined,
       platforms: Platform[] | undefined,
       since: Date,
-      creators?: CreatorRef[],
+      filters?: { creators?: CreatorRef[]; mediaTypes?: MediaType[]; to?: Date; related?: string[] },
     ): Promise<Pick<Post, "publishedAt" | "engagementScore">[]>;
+    /** Engagement scores of a platform's most recent posts — the reference distribution for the simulator's score. */
+    engagementSample(platform: Platform, limit: number): Promise<number[]>;
     setBreakdown(id: string, breakdown: AiBreakdown): Promise<void>;
     rescoreSince(since: Date): Promise<number>;
     count(): Promise<number>;

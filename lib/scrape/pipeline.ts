@@ -1,7 +1,7 @@
 import "server-only";
 import { understandQuery } from "../ai/query";
 import { getCache } from "../cache";
-import type { RawItem, ScrapePage } from "../apify/client";
+import { withLowPriority, type RawItem, type ScrapePage } from "../apify/client";
 import { generateDemoPosts } from "../apify/demo";
 import { scrapeInstagram } from "../apify/instagram";
 import { scrapeLinkedIn } from "../apify/linkedin";
@@ -12,7 +12,7 @@ import { ApiError } from "../http";
 import { getRepo } from "../repo";
 import type { Repository } from "../repo/types";
 import { normalizeTopic } from "../text";
-import type { Platform, Post, PostInput, ScrapeJob, ScrapeRunInfo } from "../types";
+import type { Platform, Post, PostInput, QueryInsight, ScrapeJob, ScrapeRunInfo } from "../types";
 
 type Scraper = (topic: string, limit: number, onStart?: (runId: string) => void, page?: ScrapePage) => Promise<RawItem[]>;
 
@@ -32,6 +32,15 @@ const MORE_TTL = 7 * 24 * 60 * 60;
 const MAX_STEPS = 6;
 /** Ids of newly added posts kept on each run, for the "Just fetched" section. */
 const NEW_IDS_CAP = 200;
+/**
+ * A topic's first fetch searches the spelling-fixed query when Gemini has one ("java script roadmap" →
+ * "javascript roadmap"), then every related query it suggested — the "Also showing" chips, e.g. "ai" →
+ * "chatgpt", "llm" — each with a third of the item budget. Related posts are stored under their own query,
+ * so the feed shows the topic's posts first and then each related search's (see scoreTopic in lib/search.ts).
+ * They run after the topic's own search, at low priority in the Apify queue (see lib/apify/client.ts), are
+ * stored as each one finishes, and never fail the run. Costs about +1/3 of a normal search per related query.
+ */
+const RELATED_ON_FIRST_FETCH = 4;
 
 export type ScrapeRequestResult =
   | { status: "cached"; platforms: Platform[] }
@@ -101,16 +110,18 @@ export async function requestScrape(options: {
  * What a "load more" step fetches. Odd steps page further into the topic's own results (X: older than the
  * oldest stored post; LinkedIn: newest-first, then later result pages; Instagram: reels/posts, deeper).
  * Even steps search a related query from understandQuery() (Gemini) when there is one ("devops" →
- * "kubernetes"); its posts are stored under the original topic so they show in the current results.
+ * "kubernetes"); its posts are stored under that query, so they show in the current results' related section.
+ * The first fetch (no step) searches the spelling-fixed topic when there is one.
  */
 async function planStep(
   repo: Repository,
   platform: Platform,
   topic: string,
   step: number | undefined,
+  insight: QueryInsight,
 ): Promise<{ query: string; page?: ScrapePage }> {
-  if (!step) return { query: topic };
-  const related = (await understandQuery(topic)).related;
+  if (!step) return { query: insight.corrected ?? topic };
+  const { related } = insight;
   if (step % 2 === 0 && related[step / 2 - 1]) return { query: related[step / 2 - 1] };
   const index = step - Math.min(Math.floor(step / 2), related.length);
   const before = platform === "x" ? await repo.posts.oldestPublished("x", { topic }) : null;
@@ -123,13 +134,15 @@ async function fetchPlatform(
   topic: string,
   onStart: (runId: string) => void,
   page?: ScrapePage,
+  limit = env.apifyMaxItems,
 ): Promise<PostInput[]> {
   if (!env.apifyToken) {
     await new Promise((resolve) => setTimeout(resolve, 1200 + Math.random() * 1500));
     // Demo posts are seeded per query, so a later page returns the same first posts plus new ones.
-    return generateDemoPosts(query, platform, Math.min(18 * (page ? page.index + 1 : 1), 126)).map((post) => ({ ...post, topic }));
+    const count = Math.min(Math.round(18 * (limit / env.apifyMaxItems)) * (page ? page.index + 1 : 1), 126);
+    return generateDemoPosts(query, platform, Math.max(count, 4)).map((post) => ({ ...post, topic }));
   }
-  const raw = await SCRAPERS[platform](query, env.apifyMaxItems, onStart, page);
+  const raw = await SCRAPERS[platform](query, limit, onStart, page);
   return raw.map((item) => NORMALIZERS[platform](item, topic)).filter((post): post is PostInput => post !== null);
 }
 
@@ -143,6 +156,8 @@ export async function executeScrapeJob(jobId: string): Promise<Post[]> {
   const runs: ScrapeRunInfo[] = job.runs;
   const persistRuns = () => repo.jobs.update(jobId, { runs });
   await repo.jobs.update(jobId, { status: "running" });
+  // Spelling fix + related searches, once for every platform (cached per query; empty without a Gemini key).
+  const insight = await understandQuery(job.topic);
 
   const saved: Post[] = [];
   await Promise.all(
@@ -151,21 +166,53 @@ export async function executeScrapeJob(jobId: string): Promise<Post[]> {
       run.status = "running";
       await persistRuns();
       try {
-        const plan = await planStep(repo, platform, job.topic, run.step);
+        const plan = await planStep(repo, platform, job.topic, run.step, insight);
         if (plan.query !== job.topic) run.query = plan.query;
-        const inputs = await fetchPlatform(
-          platform,
-          plan.query,
-          job.topic,
-          (runId) => {
-            run.runId = runId;
-            void persistRuns();
-          },
-          plan.page,
-        );
-        const { posts, createdIds } = await repo.posts.upsertMany(inputs);
-        saved.push(...posts);
-        Object.assign(run, { status: "succeeded", items: posts.length, newPostIds: createdIds.slice(0, NEW_IDS_CAP) });
+        const onStart = (runId: string) => {
+          run.runId = runId;
+          void persistRuns();
+        };
+        // A load-more step that searched a related query stores its posts under that query (the feed's
+        // related section); the topic's own results — spelling-fixed or not — are stored under the topic.
+        const storeAs = plan.query === job.topic || plan.query === insight.corrected ? job.topic : plan.query;
+        const own = await fetchPlatform(platform, plan.query, storeAs, onStart, plan.page);
+        const first = await repo.posts.upsertMany(own);
+        saved.push(...first.posts);
+        const createdIds = [...first.createdIds];
+        let items = first.posts.length;
+
+        // First fetch only: every related query (queued behind other searches; failures are logged), each
+        // stored under its own query as soon as it arrives. The topic's own posts are reported first, so the
+        // feed shows them while these run.
+        const related = run.step ? [] : insight.related.slice(0, RELATED_ON_FIRST_FETCH);
+        run.items = items;
+        if (related.length) run.related = related;
+        await repo.jobs.update(jobId, { runs, postsFound: saved.length });
+        if (related.length) {
+          const relatedLimit = Math.max(10, Math.ceil(env.apifyMaxItems / 3));
+          const seen = new Set(own.map((post) => post.postUrl));
+          await withLowPriority(() =>
+            Promise.all(
+              related.map(async (query) => {
+                try {
+                  const found = await fetchPlatform(platform, query, query, () => {}, undefined, relatedLimit);
+                  const fresh = found.filter((post) => !seen.has(post.postUrl) && Boolean(seen.add(post.postUrl)));
+                  if (!fresh.length) return;
+                  const more = await repo.posts.upsertMany(fresh);
+                  saved.push(...more.posts);
+                  createdIds.push(...more.createdIds);
+                  items += more.posts.length;
+                  run.items = items;
+                  await repo.jobs.update(jobId, { runs, postsFound: saved.length });
+                } catch (error) {
+                  console.error(`[virallens] ${platform} related search "${query}" failed:`, error);
+                }
+              }),
+            ),
+          );
+          run.query = [plan.query, ...related].join(" + ");
+        }
+        Object.assign(run, { status: "succeeded", items, newPostIds: createdIds.slice(0, NEW_IDS_CAP) });
         await cache.set(freshKey(platform, job.topic), "1", env.scrapeCacheTtl);
         // A page of the topic's own results with nothing new: this platform has run out.
         if (run.step && plan.page && !createdIds.length) await cache.set(doneKey(platform, job.topic), "1", MORE_TTL);
