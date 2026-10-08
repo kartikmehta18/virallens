@@ -326,6 +326,7 @@ export function ExploreView() {
         <SearchInsight
           topic={filters.topic}
           exact={filters.exact}
+          jobId={jobId}
           onSearch={(topic) => onSubmit({ ...filters, topic, exact: false })}
           onExactChange={(exact) => updateFilters({ exact })}
         />
