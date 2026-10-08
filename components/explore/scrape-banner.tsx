@@ -38,7 +38,11 @@ export function ScrapeBanner({ jobId, onFinished, onProgress, onDismiss }: Props
     }
   }, [job, onProgress]);
   // Related searches still running after the topic's own posts were stored.
-  const relatedPending = [...new Set(job?.runs.flatMap((run) => (run.status === "running" ? (run.related ?? []) : [])) ?? [])];
+  const relatedPending = [
+    ...new Set(
+      job?.runs.flatMap((run) => (run.status === "running" ? (run.related ?? []).filter((q) => run.relatedItems?.[q] === undefined) : [])) ?? [],
+    ),
+  ];
 
   const reported = useRef<string | null>(null);
   useEffect(() => {
@@ -70,7 +74,7 @@ export function ScrapeBanner({ jobId, onFinished, onProgress, onDismiss }: Props
             <span className="font-medium">
               {!job || !isDone(job)
                 ? relatedPending.length
-                  ? `Found ${job?.postsFound ?? 0} posts for “${job?.topic}” — now fetching related: ${relatedPending.join(", ")}`
+                  ? `${job?.runs.every((run) => run.relatedOnly) ? `“${job?.topic}” is up to date` : `Found ${job?.postsFound ?? 0} posts for “${job?.topic}”`} — now fetching related: ${relatedPending.join(", ")}`
                   : `Fetching fresh posts for “${job?.topic ?? "…"}”`
                 : job.status === "failed"
                   ? "Couldn't fetch new posts"

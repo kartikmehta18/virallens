@@ -151,6 +151,10 @@ export interface ScrapeRunInfo {
   query?: string;
   /** First fetch: the related searches fetched after the topic's own posts were stored (the "Also showing" chips). */
   related?: string[];
+  /** Posts found per related search that has finished (a search that failed is left out). */
+  relatedItems?: Record<string, number>;
+  /** The topic's own posts are fresh: this run only fetches related searches that weren't fetched yet. */
+  relatedOnly?: boolean;
   items?: number;
   /** Posts this run added that weren't stored before (capped). */
   newPostIds?: string[];

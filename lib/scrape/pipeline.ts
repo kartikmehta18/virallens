@@ -27,6 +27,10 @@ const inflightKey = (platforms: Platform[], topic: string) => `scrape:inflight:$
 /** "Load more" clicks so far for a topic on a platform, and whether its results ran out. */
 const stepKey = (platform: Platform, topic: string) => `scrape:more:${platform}:${topic.toLowerCase()}`;
 const doneKey = (platform: Platform, topic: string) => `scrape:more-done:${platform}:${topic.toLowerCase()}`;
+/** A related search already fetched for a platform (under any topic), so a fresh topic doesn't fetch it again. */
+const relatedKey = (platform: Platform, query: string) => `scrape:related:${platform}:${query.toLowerCase()}`;
+/** How long a failed related search waits before a visit to the topic tries it again. */
+const RELATED_RETRY_TTL = 15 * 60;
 const MORE_TTL = 7 * 24 * 60 * 60;
 /** Load-more clicks per topic and platform (each costs about one normal search) before "exhausted". */
 const MAX_STEPS = 6;
@@ -39,6 +43,7 @@ const NEW_IDS_CAP = 200;
  * so the feed shows the topic's posts first and then each related search's (see scoreTopic in lib/search.ts).
  * They run after the topic's own search, at low priority in the Apify queue (see lib/apify/client.ts), are
  * stored as each one finishes, and never fail the run. Costs about +1/3 of a normal search per related query.
+ * A topic that is already fresh still fetches the related queries it never fetched (see requestScrape).
  */
 const RELATED_ON_FIRST_FETCH = 4;
 
@@ -82,6 +87,22 @@ export async function requestScrape(options: {
   for (const platform of options.platforms) {
     if (options.more ? steps.has(platform) : options.force || !(await cache.get(freshKey(platform, topic)))) stale.push(platform);
   }
+  // The topic itself is fresh, but its related searches (the "Also showing" chips) may never have been
+  // fetched — the AI answer arrived after the topic's first fetch, or one of them failed. Fetch just those.
+  const missing = new Map<Platform, string[]>();
+  if (!stale.length && !options.more) {
+    const related = (await understandQuery(topic)).related.slice(0, RELATED_ON_FIRST_FETCH);
+    for (const platform of options.platforms) {
+      const todo: string[] = [];
+      for (const query of related) {
+        if (!(await cache.get(relatedKey(platform, query))) && !(await cache.get(freshKey(platform, query)))) todo.push(query);
+      }
+      if (todo.length) {
+        missing.set(platform, todo);
+        stale.push(platform);
+      }
+    }
+  }
   if (!stale.length) return { status: "cached", platforms: options.platforms };
 
   const existingJobId = await cache.get(inflightKey(stale, topic));
@@ -98,7 +119,13 @@ export async function requestScrape(options: {
     topic,
     platforms: stale,
     userId: options.userId,
-    runs: stale.map((platform) => ({ platform, source, status: "pending", ...(steps.has(platform) && { step: steps.get(platform) }) })),
+    runs: stale.map((platform) => ({
+      platform,
+      source,
+      status: "pending",
+      ...(steps.has(platform) && { step: steps.get(platform) }),
+      ...(missing.has(platform) && { relatedOnly: true, related: missing.get(platform) }),
+    })),
   });
   await cache.set(inflightKey(stale, topic), job.id, 15 * 60);
   // Claim the step now, so a second click while this job runs fetches the slice after it.
@@ -175,7 +202,7 @@ export async function executeScrapeJob(jobId: string): Promise<Post[]> {
         // A load-more step that searched a related query stores its posts under that query (the feed's
         // related section); the topic's own results — spelling-fixed or not — are stored under the topic.
         const storeAs = plan.query === job.topic || plan.query === insight.corrected ? job.topic : plan.query;
-        const own = await fetchPlatform(platform, plan.query, storeAs, onStart, plan.page);
+        const own = run.relatedOnly ? [] : await fetchPlatform(platform, plan.query, storeAs, onStart, plan.page);
         const first = await repo.posts.upsertMany(own);
         saved.push(...first.posts);
         const createdIds = [...first.createdIds];
@@ -184,9 +211,9 @@ export async function executeScrapeJob(jobId: string): Promise<Post[]> {
         // First fetch only: every related query (queued behind other searches; failures are logged), each
         // stored under its own query as soon as it arrives. The topic's own posts are reported first, so the
         // feed shows them while these run.
-        const related = run.step ? [] : insight.related.slice(0, RELATED_ON_FIRST_FETCH);
+        const related = run.step ? [] : run.relatedOnly ? (run.related ?? []) : insight.related.slice(0, RELATED_ON_FIRST_FETCH);
         run.items = items;
-        if (related.length) run.related = related;
+        if (related.length) Object.assign(run, { related, relatedItems: {} });
         await repo.jobs.update(jobId, { runs, postsFound: saved.length });
         if (related.length) {
           const relatedLimit = Math.max(10, Math.ceil(env.apifyMaxItems / 3));
@@ -197,23 +224,27 @@ export async function executeScrapeJob(jobId: string): Promise<Post[]> {
                 try {
                   const found = await fetchPlatform(platform, query, query, () => {}, undefined, relatedLimit);
                   const fresh = found.filter((post) => !seen.has(post.postUrl) && Boolean(seen.add(post.postUrl)));
-                  if (!fresh.length) return;
-                  const more = await repo.posts.upsertMany(fresh);
-                  saved.push(...more.posts);
-                  createdIds.push(...more.createdIds);
-                  items += more.posts.length;
-                  run.items = items;
+                  await cache.set(relatedKey(platform, query), "1", env.scrapeCacheTtl);
+                  if (fresh.length) {
+                    const more = await repo.posts.upsertMany(fresh);
+                    saved.push(...more.posts);
+                    createdIds.push(...more.createdIds);
+                    items += more.posts.length;
+                    run.items = items;
+                  }
+                  run.relatedItems = { ...run.relatedItems, [query]: fresh.length };
                   await repo.jobs.update(jobId, { runs, postsFound: saved.length });
                 } catch (error) {
+                  await cache.set(relatedKey(platform, query), "1", RELATED_RETRY_TTL);
                   console.error(`[virallens] ${platform} related search "${query}" failed:`, error);
                 }
               }),
             ),
           );
-          run.query = [plan.query, ...related].join(" + ");
+          run.query = (run.relatedOnly ? related : [plan.query, ...related]).join(" + ");
         }
         Object.assign(run, { status: "succeeded", items, newPostIds: createdIds.slice(0, NEW_IDS_CAP) });
-        await cache.set(freshKey(platform, job.topic), "1", env.scrapeCacheTtl);
+        if (!run.relatedOnly) await cache.set(freshKey(platform, job.topic), "1", env.scrapeCacheTtl);
         // A page of the topic's own results with nothing new: this platform has run out.
         if (run.step && plan.page && !createdIds.length) await cache.set(doneKey(platform, job.topic), "1", MORE_TTL);
       } catch (error) {
