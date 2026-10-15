@@ -43,6 +43,7 @@ const SCOPE = "simulator";
 const PROVIDER_LABEL: Record<AiBreakdown["provider"], string> = {
   anthropic: "Claude",
   openai: "OpenAI",
+  deepseek: "DeepSeek",
   gemini: "Gemini",
   heuristic: "the built-in analysis",
 };

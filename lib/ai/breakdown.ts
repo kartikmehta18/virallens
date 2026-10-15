@@ -2,6 +2,7 @@ import "server-only";
 import { env } from "../env";
 import type { AiBreakdown, Post } from "../types";
 import { anthropicBreakdown } from "./anthropic";
+import { deepseekBreakdown } from "./deepseek";
 import { geminiBreakdown } from "./gemini";
 import { heuristicBreakdown } from "./heuristic";
 import { openaiBreakdown } from "./openai";
@@ -13,10 +14,11 @@ type LlmProvider = Exclude<AiBreakdown["provider"], "heuristic">;
 const PROVIDERS: { name: LlmProvider; enabled: () => boolean; run: (post: Post) => Promise<string[] | null> }[] = [
   { name: "anthropic", enabled: () => Boolean(env.anthropicKey), run: anthropicBreakdown },
   { name: "openai", enabled: () => Boolean(env.openaiKey), run: openaiBreakdown },
+  { name: "deepseek", enabled: () => Boolean(env.deepseekKey), run: deepseekBreakdown },
   { name: "gemini", enabled: () => Boolean(env.geminiKey), run: geminiBreakdown },
 ];
 
-/** Every provider with a key configured, in preference order: Claude → OpenAI → Gemini. */
+/** Every provider with a key configured, in preference order: Claude → OpenAI → DeepSeek → Gemini. */
 export const configuredAiProviders = (): LlmProvider[] => PROVIDERS.filter((p) => p.enabled()).map((p) => p.name);
 
 export function activeAiProvider(): AiBreakdown["provider"] {

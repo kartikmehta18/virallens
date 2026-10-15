@@ -38,6 +38,9 @@ export const env = {
   get openaiKey() {
     return process.env.OPENAI_API_KEY?.trim() || null;
   },
+  get deepseekKey() {
+    return process.env.DEEPSEEK_API_KEY?.trim() || null;
+  },
   /** Google Gemini (free tier via Google AI Studio). GEMNI_API_KEY is accepted as a typo-tolerant alias. */
   get geminiKey() {
     return (process.env.GEMINI_API_KEY || process.env.GEMNI_API_KEY || process.env.GOOGLE_API_KEY)?.trim() || null;
