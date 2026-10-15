@@ -61,7 +61,8 @@ All variables live in `.env` (copy from `.env.example`). Everything except `TEST
 | `SCRAPE_RATE_LIMIT`                                                | no                   | Scrapes per user/IP per hour (default `20`)                                                                   |
 | `ANTHROPIC_API_KEY`                                                | no                   | AI "why it went viral" breakdowns via Claude (preferred)                                                      |
 | `OPENAI_API_KEY`                                                   | no                   | Same feature via OpenAI (tried after Claude)                                                                  |
-| `GEMINI_API_KEY`                                                   | no                   | Same feature via Google Gemini — free tier (tried after OpenAI)                                               |
+| `DEEPSEEK_API_KEY`                                                 | no                   | Same feature via DeepSeek (tried before Gemini); also search understanding                                    |
+| `GEMINI_API_KEY`                                                   | no                   | Same feature via Google Gemini — free tier (tried last)                                               |
 | `OPENAI_MODEL`                                                     | no                   | Defaults to `gpt-4o-mini`                                                                                     |
 | `RESEND_API_KEY`                                                   | no                   | Sends alert emails. Without it alerts are logged to the server console                                        |
 | `ALERT_FROM_EMAIL`                                                 | no                   | From address for alerts, e.g. `ViralLens <alerts@yourdomain.com>`                                             |
@@ -266,7 +267,16 @@ Tables: `Post`, `User`, `Board`, `SavedPost`, `ScrapeJob`, `WatchedTopic`, `Watc
    free tier.
 3. `GEMINI_API_KEY=AIzaxxxx` (optionally `GEMINI_MODEL=gemini-flash-latest`).
 
-**Any one key is enough.** Configured providers are tried in order Claude → OpenAI → Gemini; if one errors
+### DeepSeek — AI breakdowns and search understanding
+
+1. <https://platform.deepseek.com/api_keys> → **Create new API key** (`sk-…`), and add balance to the account.
+2. `DEEPSEEK_API_KEY=sk-xxxx` (optionally `DEEPSEEK_MODEL=deepseek-chat`).
+
+DeepSeek or Gemini also answers Explore's search understanding (spelling fixes and the "Also showing" related
+searches) — DeepSeek first when both are set. DeepSeek can't read images, so the simulator judges an image
+post's text only when it answers.
+
+**Any one key is enough.** Configured providers are tried in order Claude → OpenAI → DeepSeek → Gemini; if one errors
 (invalid key, quota exceeded) the next is used. With no working key, breakdowns come from a built-in
 rule-based analysis, so the button always works.
 
@@ -440,7 +450,7 @@ lib/
   apify/             actor clients, normalizers, demo generator
   repo/              storage abstraction: prisma.ts (MySQL) · memory.ts
   auth/              scrypt hashing, signed cookies, session resolution
-  ai/                Claude · OpenAI · Gemini · heuristic breakdowns
+  ai/                Claude · OpenAI · DeepSeek · Gemini · heuristic breakdowns
   scrape/pipeline.ts scrape jobs, caching, rate limiting
   client/            React Query hooks, preferences, filters
 prisma/schema.prisma database schema

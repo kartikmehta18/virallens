@@ -9,6 +9,7 @@ import type { AiBreakdown as Breakdown, Post } from "@/lib/types";
 const PROVIDER_LABEL: Record<Breakdown["provider"], string> = {
   anthropic: "Claude",
   openai: "OpenAI",
+  deepseek: "DeepSeek",
   gemini: "Gemini",
   heuristic: "Built-in analysis",
 };

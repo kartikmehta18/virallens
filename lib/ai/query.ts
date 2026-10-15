@@ -3,16 +3,18 @@ import { getCache } from "../cache";
 import { env } from "../env";
 import { normalizeTopic } from "../text";
 import type { QueryInsight } from "../types";
+import { deepseekJson } from "./deepseek";
 import { geminiJson } from "./gemini";
 
 // Query understanding for Explore: fixes typos ("devoops" → "devops") and suggests related searches that
-// find more posts on the same subject. Gemini's free tier is plenty — each distinct query is asked once and
-// cached for 30 days. Without a Gemini key the feature is simply off (no suggestions), nothing breaks.
+// find more posts on the same subject. Answered by DeepSeek or Gemini (whichever keys are set, DeepSeek
+// first, the other as fallback) — each distinct query is asked once and cached for 30 days. Without either
+// key the feature is simply off (no suggestions), nothing breaks.
 
 const EMPTY: QueryInsight = { corrected: null, related: [] };
 /** New (uncached) queries per user/IP per hour — keeps the Gemini free-tier quota safe. */
 export const UNDERSTAND_HOURLY_LIMIT = 60;
-/** How long a feed request waits for a first-time (uncached) Gemini answer before going without it. */
+/** How long a feed request waits for a first-time (uncached) AI answer before going without it. */
 const FEED_WAIT_MS = 3000;
 const TTL = 30 * 24 * 60 * 60;
 const RETRY_AFTER_ERROR = 60 * 60;
@@ -26,6 +28,27 @@ const SYSTEM =
   '"platform engineering"), most useful first. Stay on the subject — no memes, jokes or generic words unless ' +
   "the query itself is about humor. Never repeat the query itself in related.";
 
+/** DeepSeek or Gemini is configured. */
+const hasAi = () => Boolean(env.deepseekKey || env.geminiKey);
+
+/**
+ * One JSON answer from the configured providers, DeepSeek first then Gemini; throws when every one fails.
+ * Gemini gets `schema` (its response schema), DeepSeek the same shape in words (`shape`).
+ */
+async function askJson<T>(system: string, prompt: string, schema: Record<string, unknown>, shape: string): Promise<T> {
+  let lastError: unknown = new Error("No AI key configured");
+  if (env.deepseekKey) {
+    try {
+      return await deepseekJson<T>(system, prompt, shape);
+    } catch (error) {
+      lastError = error;
+      if (env.geminiKey) console.error("[virallens] DeepSeek failed, trying Gemini:", error);
+    }
+  }
+  if (env.geminiKey) return geminiJson<T>(system, prompt, schema);
+  throw lastError;
+}
+
 const clean = (value: unknown) => normalizeTopic(String(value ?? "")).slice(0, 60);
 
 const POST_SYSTEM =
@@ -35,19 +58,20 @@ const POST_SYSTEM =
 
 /**
  * The subject of a post as a search query, for "load more similar posts" once the stored ones run out.
- * Gemini reads the caption (cached per post, 30 days); `fallback` (its key words) is used without a key.
+ * The AI reads the caption (cached per post, 30 days); `fallback` (its key words) is used without a key.
  */
 export async function postSearchQuery(post: { id: string; caption: string; tags: string[] }, fallback: string): Promise<string> {
-  if (!env.geminiKey) return fallback;
+  if (!hasAi()) return fallback;
   const cache = await getCache();
   const key = `ai:post-query:v1:${post.id}`;
   const cached = await cache.get(key);
   if (cached) return cached;
   try {
-    const result = await geminiJson<{ query?: unknown }>(
+    const result = await askJson<{ query?: unknown }>(
       POST_SYSTEM,
       `Post:\n${post.caption.slice(0, 1500)}\nHashtags: ${post.tags.slice(0, 10).join(", ") || "none"}`,
       { type: "OBJECT", properties: { query: { type: "STRING" } }, required: ["query"] },
+      '{"query": string}',
     );
     const query = clean(result.query).replace(/[#"“”]/g, "");
     if (query.length < 2) return fallback;
@@ -63,12 +87,12 @@ const cacheKey = (q: string) => `ai:query:v1:${q.toLowerCase()}`;
 
 /**
  * Searches to include alongside `topic` in the feed: its spelling fix, then the related queries. Cached
- * answers are free; a first-time query costs one Gemini call against the caller's hourly budget and is
+ * answers are free; a first-time query costs one AI call against the caller's hourly budget and is
  * awaited at most FEED_WAIT_MS (it still finishes and caches in the background).
  */
 export async function relatedSearches(topic: string, rateKey: () => Promise<string>): Promise<string[]> {
   const q = normalizeTopic(topic);
-  if (q.length < 2 || !env.geminiKey) return [];
+  if (q.length < 2 || !hasAi()) return [];
   const cache = await getCache();
   let insight: QueryInsight | null = null;
   const cached = await cache.get(cacheKey(q));
@@ -85,10 +109,10 @@ export async function relatedSearches(topic: string, rateKey: () => Promise<stri
   return [...(insight.corrected ? [insight.corrected] : []), ...insight.related];
 }
 
-/** Cached; returns EMPTY when no Gemini key is configured or the call fails. */
+/** Cached; returns EMPTY when no DeepSeek or Gemini key is configured or every call fails. */
 export async function understandQuery(query: string): Promise<QueryInsight> {
   const q = normalizeTopic(query);
-  if (q.length < 2 || !env.geminiKey) return EMPTY;
+  if (q.length < 2 || !hasAi()) return EMPTY;
 
   const cache = await getCache();
   const key = cacheKey(q);
@@ -96,11 +120,16 @@ export async function understandQuery(query: string): Promise<QueryInsight> {
   if (cached) return JSON.parse(cached) as QueryInsight;
 
   try {
-    const result = await geminiJson<{ corrected?: unknown; related?: unknown }>(SYSTEM, `Query: ${q}`, {
-      type: "OBJECT",
-      properties: { corrected: { type: "STRING" }, related: { type: "ARRAY", items: { type: "STRING" } } },
-      required: ["corrected", "related"],
-    });
+    const result = await askJson<{ corrected?: unknown; related?: unknown }>(
+      SYSTEM,
+      `Query: ${q}`,
+      {
+        type: "OBJECT",
+        properties: { corrected: { type: "STRING" }, related: { type: "ARRAY", items: { type: "STRING" } } },
+        required: ["corrected", "related"],
+      },
+      '{"corrected": string, "related": string[]}',
+    );
     const corrected = clean(result.corrected);
     const seen = new Set([q.toLowerCase(), corrected.toLowerCase()]);
     const related: string[] = [];
@@ -126,7 +155,7 @@ export async function understandQuery(query: string): Promise<QueryInsight> {
 
 /**
  * Adds the topic's related searches to a feed query (posts, timeline, export), unless `exact=1` asks for
- * direct matches only. `rateKey` (user id, else IP) is only resolved on a Gemini cache miss.
+ * direct matches only. `rateKey` (user id, else IP) is only resolved on an AI cache miss.
  */
 export async function withRelated<T extends { topic?: string; related?: string[] }>(
   query: T,

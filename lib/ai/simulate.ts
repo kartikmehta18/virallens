@@ -4,11 +4,12 @@ import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { env } from "../env";
 import type { AiBreakdown, Platform, Post, SimulationBenchmark, SimulationResult, SimulationSignal } from "../types";
+import { deepseekJson } from "./deepseek";
 import { geminiJson } from "./gemini";
 
 // AI half of the virality simulator: an LLM reads the draft (and its image) next to real top and bottom
 // performers from the same niche and predicts a score on their scale, with diff-style fixes and two rewrites.
-// Providers are tried in the same order as the breakdown (Claude → OpenAI → Gemini); null when none works.
+// Providers are tried in the same order as the breakdown (Claude → OpenAI → DeepSeek → Gemini); null when none works.
 
 export interface DraftImage {
   mimeType: "image/jpeg" | "image/png" | "image/webp" | "image/gif";
@@ -201,6 +202,16 @@ const GEMINI_SCHEMA = {
   required: ["score", "verdict", "summary", "hook", "visual", "strengths", "fixes", "suggestions"],
 };
 
+// DeepSeek can't see images: it's told there is one, so it judges the text and leaves `visual` empty.
+const deepseekSimulate = (prompt: string, image: DraftImage | null) =>
+  deepseekJson<unknown>(
+    `${SIMULATE_SYSTEM} ${FIELD_GUIDE}`,
+    image ? `${prompt}
+
+(The draft has an image you can't see: judge the text only and set visual to an empty string.)` : prompt,
+    JSON_SHAPE,
+  );
+
 const geminiSimulate = (prompt: string, image: DraftImage | null) =>
   geminiJson<unknown>(`${SIMULATE_SYSTEM} ${FIELD_GUIDE}`, prompt, GEMINI_SCHEMA, image);
 
@@ -209,6 +220,7 @@ type LlmProvider = Exclude<AiBreakdown["provider"], "heuristic">;
 const PROVIDERS: { name: LlmProvider; enabled: () => boolean; run: (prompt: string, image: DraftImage | null) => Promise<unknown> }[] = [
   { name: "anthropic", enabled: () => Boolean(env.anthropicKey), run: anthropicSimulate },
   { name: "openai", enabled: () => Boolean(env.openaiKey), run: openaiSimulate },
+  { name: "deepseek", enabled: () => Boolean(env.deepseekKey), run: deepseekSimulate },
   { name: "gemini", enabled: () => Boolean(env.geminiKey), run: geminiSimulate },
 ];
 

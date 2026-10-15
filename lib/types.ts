@@ -14,7 +14,7 @@ export type DateRange = (typeof DATE_RANGES)[number];
 
 export interface AiBreakdown {
   bullets: string[];
-  provider: "anthropic" | "openai" | "gemini" | "heuristic";
+  provider: "anthropic" | "openai" | "deepseek" | "gemini" | "heuristic";
   generatedAt: string;
 }
 

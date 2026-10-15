@@ -159,7 +159,7 @@ export default function SettingsPage() {
               label="AI breakdowns"
               value={
                 session
-                  ? { anthropic: "Claude", openai: "OpenAI", gemini: "Gemini", heuristic: "Built-in analysis" }[session.aiProvider]
+                  ? { anthropic: "Claude", openai: "OpenAI", deepseek: "DeepSeek", gemini: "Gemini", heuristic: "Built-in analysis" }[session.aiProvider]
                   : "…"
               }
               on={session ? session.aiProvider !== "heuristic" : undefined}
